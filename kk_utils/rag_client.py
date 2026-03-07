@@ -95,13 +95,14 @@ class RAGClient:
         json: Optional[Dict] = None,
         files: Optional[Dict] = None,
         data: Optional[Dict] = None,
+        params: Optional[Dict] = None,
     ) -> Dict[str, Any]:
         """Make POST request with logging."""
         url = f"{self.base_url}{path}"
-        logger.debug(f"POST {url} json={json}")
-        
+        logger.debug(f"POST {url} json={json} params={params}")
+
         try:
-            response = self.session.post(url, json=json, files=files, data=data, timeout=self.timeout)
+            response = self.session.post(url, json=json, files=files, data=data, params=params, timeout=self.timeout)
             response.raise_for_status()
             result = response.json()
             logger.debug(f"Response: {result}")
@@ -159,6 +160,48 @@ class RAGClient:
         """List all RAG collections."""
         logger.debug("Listing RAG collections")
         return self._get("/api/v1/rag/collections")
+
+    def get_collection_stats(self, collection_name: str) -> Dict[str, Any]:
+        """Get statistics for a specific collection."""
+        logger.debug(f"Getting stats for collection: {collection_name}")
+        return self._get(f"/api/v1/rag/collections/{collection_name}/stats")
+
+    def list_collection_documents(
+        self,
+        collection_name: str,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        """List documents in a specific collection. Returns dict with 'documents' and 'total'."""
+        logger.debug(f"Listing documents in collection: {collection_name}")
+        return self._get(
+            f"/api/v1/rag/collections/{collection_name}/documents",
+            params={"limit": limit, "offset": offset},
+        )
+
+    def search_collection(
+        self,
+        collection_name: str,
+        query: str,
+        top_k: int = 5,
+    ) -> Dict[str, Any]:
+        """Search within a specific collection. Returns dict with 'results' list."""
+        logger.debug(f"Searching collection {collection_name}: {query[:50]}")
+        # Backend takes query/top_k as URL query params on this POST endpoint
+        return self._post(
+            f"/api/v1/rag/collections/{collection_name}/search",
+            params={"query": query, "top_k": top_k},
+        )
+
+    def delete_collection(self, collection_name: str) -> Dict[str, Any]:
+        """Delete an entire collection."""
+        logger.info(f"Deleting collection: {collection_name}")
+        return self._delete(f"/api/v1/rag/collections/{collection_name}")
+
+    def delete_collection_document(self, collection_name: str, doc_id: str) -> Dict[str, Any]:
+        """Delete a document/chunk from a specific collection."""
+        logger.info(f"Deleting document {doc_id} from collection: {collection_name}")
+        return self._delete(f"/api/v1/rag/collections/{collection_name}/documents/{doc_id}")
 
     def list_documents(self) -> List[Dict[str, Any]]:
         """
