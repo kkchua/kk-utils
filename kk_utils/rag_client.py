@@ -129,7 +129,7 @@ class RAGClient:
     # Document Management
     # =========================================================================
 
-    def upload_document(self, file_path: str) -> Dict[str, Any]:
+    def upload_document(self, file_path: str, collection: str = "digital_me") -> Dict[str, Any]:
         """
         Upload a document.
 
@@ -143,20 +143,22 @@ class RAGClient:
         if not file_path.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
 
-        logger.info(f"Uploading document: {file_path.name}")
+        logger.info(f"Uploading document: {file_path.name} -> collection: {collection}")
 
         with open(file_path, "rb") as f:
-            # Send file with proper filename
             files = {"file": (file_path.name, f)}
-            # Include metadata parameter (even if empty) to match backend Form signature
-            data = {"metadata": ""}
-            # user_id is sent via header (set in session headers during __init__)
+            data = {"metadata": "", "collection": collection}
 
             return self._post(
                 "/api/v1/documents/upload",
                 files=files,
                 data=data,
             )
+
+    def list_collections(self) -> List[Dict[str, Any]]:
+        """List all RAG collections."""
+        logger.debug("Listing RAG collections")
+        return self._get("/api/v1/rag/collections")
 
     def list_documents(self) -> List[Dict[str, Any]]:
         """
