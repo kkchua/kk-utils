@@ -14,6 +14,7 @@ Fail-Fast Principle:
 """
 from pathlib import Path
 import logging
+import os
 import sys
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,19 @@ def load_environment(env_file: str = ".env", required: bool = True) -> bool:
         env_path = Path.cwd() / env_file
         
         if not env_path.exists():
+            # Cloud platforms (Railway, Heroku, Render, HuggingFace, etc.) inject
+            # env vars directly — no .env file needed in these environments.
+            _CLOUD_INDICATORS = [
+                "RAILWAY_ENVIRONMENT", "RAILWAY_SERVICE_NAME",
+                "HEROKU_APP_NAME", "FLY_APP_NAME", "RENDER",
+                "SPACE_ID",  # HuggingFace Spaces
+            ]
+            is_cloud = any(os.environ.get(k) for k in _CLOUD_INDICATORS)
+            if is_cloud:
+                logger.info("☁️ Cloud environment detected - using injected environment variables")
+                _env_loaded = True
+                return True
+
             if required:
                 logger.error(f"❌ .env not found at: {env_path}")
                 logger.error(f"❌ This is REQUIRED - application cannot start without it")
