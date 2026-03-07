@@ -1,0 +1,23 @@
+# KK-Utils Test Configuration
+
+# This is an EXAMPLE config file for testing
+# Copy this to config/settings.yaml
+
+app:
+  name: "My Application"
+  version: "1.0.0"
+  debug: true
+
+logging:
+  level: "INFO"
+  format: "structured"
+  file: "logs/app.log"
+
+database:
+  url: "sqlite:///./app.db"
+  pool_size: 5
+
+features:
+  enable_cache: true
+  enable_logging: true
+  max_retries: 3

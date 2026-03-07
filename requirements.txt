@@ -1,0 +1,8 @@
+# KK-Utils - Dependencies
+
+# Core dependencies
+PyYAML>=6.0
+python-dotenv>=1.0.0
+
+# Optional dependencies
+# None required for core functionality
