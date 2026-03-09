@@ -408,6 +408,7 @@ class AIService:
         try:
             real_iterations = 0  # only real tool calls count; progress calls are free
             emit_llm_trace = True  # suppress duplicate "calling LLM" after report_progress-only loops
+            _executed_tools: Dict[str, Any] = {}  # dedup cache across ALL iterations this turn
 
             while real_iterations < max_iterations:
                 if trace_callback and emit_llm_trace:
@@ -447,7 +448,6 @@ class AIService:
                             trace_callback(f"agent_me: LLM requests tool(s): {', '.join(real_names)}")
 
                     has_real_tool = False
-                    _executed_tools: Dict[str, Any] = {}  # cache: "tool_name:args_json" → result (dedup within batch)
 
                     for tool_call in choice.message.tool_calls:
                         tool_name = tool_call.function.name
