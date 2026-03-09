@@ -41,6 +41,9 @@ setup(
     long_description_content_type="text/markdown",
     url="https://github.com/YOUR_USERNAME/kk-utils",
     packages=find_packages(),
+    package_data={
+        "kk_utils": ["ai/prompts/*.yaml"],
+    },
     classifiers=[
         "Development Status :: 4 - Beta",
         "Intended Audience :: Developers",

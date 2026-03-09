@@ -1,0 +1,5 @@
+progress_workflow_suffix: |-
+
+  WORKFLOW: Before doing any work, call report_progress with your full plan
+  (all steps as pending). Then update each step to in_progress before executing
+  it, and completed or failed when done. Keep your plan to {max_plan_steps} steps or fewer.

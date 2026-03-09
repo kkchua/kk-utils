@@ -163,9 +163,19 @@ class AgentMeFactory:
             f"skills_loaded={loaded} tools={len(tools)}"
         )
 
+        # Append global system prompt suffix from Governor (if available)
+        system_prompt = persona.system_prompt
+        try:
+            from app.core.governor import PersonalAssistantGovernor
+            suffix = PersonalAssistantGovernor.instance().get_global_system_prompt_suffix()
+            if suffix:
+                system_prompt = system_prompt.rstrip() + "\n" + suffix
+        except ImportError:
+            pass
+
         return AgentConfig(
             tools=tools,
-            system_prompt=persona.system_prompt,
+            system_prompt=system_prompt,
             persona=persona,
         )
 
