@@ -155,9 +155,19 @@ class RAGConfigLoader:
         
         # Determine config path
         if config_path is None:
-            # Default: backend/config/rag_config.yaml
-            base_path = Path(__file__).resolve().parent.parent.parent  # backend/
-            config_path = str(base_path / "config" / "rag_config.yaml")
+            import os
+            # 1. Explicit env var (set in backend/.env as RAG_CONFIG_PATH=config/rag_config.yaml)
+            env_path = os.environ.get("RAG_CONFIG_PATH")
+            if env_path:
+                config_path = str(Path(env_path).resolve()) if not Path(env_path).is_absolute() else env_path
+            else:
+                # 2. Relative to CWD (works when running from backend/ directory)
+                cwd_config = Path.cwd() / "config" / "rag_config.yaml"
+                if cwd_config.exists():
+                    config_path = str(cwd_config)
+                else:
+                    # 3. Fallback: use defaults (no config file)
+                    config_path = str(cwd_config)  # will trigger the not-found warning below
         
         config_file = Path(config_path)
         

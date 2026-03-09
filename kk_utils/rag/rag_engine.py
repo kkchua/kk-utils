@@ -108,12 +108,18 @@ class RAGEngine:
 
         # Determine persist directory - use passed value if provided
         if persist_directory is None:
-            # Default: use config and resolve relative to backend
             persist_dir = self.config.storage.persist_directory
-            # Try to resolve relative to personal-assistant backend first
-            base_path = Path(__file__).resolve().parent.parent.parent.parent.parent  # 00_Python/
-            persist_directory = str(base_path / "personal-assistant" / "backend" / "data" / persist_dir)
-            logger.info(f"Using default persist directory: {persist_directory}")
+            # Derive data dir from RAG_CONFIG_PATH env var (set by the backend .env).
+            # This avoids brittle parent-count path guessing across different layouts.
+            import os
+            config_path_env = os.environ.get("RAG_CONFIG_PATH")
+            if config_path_env:
+                backend_root = Path(config_path_env).resolve().parent.parent  # config/ -> backend/
+                persist_directory = str(backend_root / "data" / persist_dir)
+            else:
+                # Fallback: resolve relative to CWD (works when CWD is the backend dir)
+                persist_directory = str(Path.cwd() / "data" / persist_dir)
+            logger.info(f"Using persist directory: {persist_directory}")
         else:
             logger.info(f"Using provided persist directory: {persist_directory}")
 
@@ -272,11 +278,23 @@ class RAGEngine:
                 logger.info(f"RAG query: question='{question[:50]}...', top_k={top_k}, "
                            f"min_confidence={min_confidence:.2f}, filter={filter_metadata}")
             
+            # Convert filter_metadata to ChromaDB v4+ operator format
+            # ChromaDB v4+ requires {"key": {"$eq": "value"}} instead of {"key": "value"}
+            chroma_filter = None
+            if filter_metadata:
+                if len(filter_metadata) == 1:
+                    key, value = list(filter_metadata.items())[0]
+                    chroma_filter = {key: {"$eq": value}}
+                else:
+                    chroma_filter = {
+                        "$and": [{key: {"$eq": value}} for key, value in filter_metadata.items()]
+                    }
+
             # Query vector DB
             results = self.collection.query(
                 query_texts=[question],
                 n_results=top_k,
-                where=filter_metadata,
+                where=chroma_filter,
                 include=["documents", "metadatas", "distances"],
             )
             

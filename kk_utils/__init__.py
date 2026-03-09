@@ -8,10 +8,12 @@ Common utilities for Python projects:
 - Path resolution helpers
 - RAG client for Personal Assistant API
 - RAG core engine (direct ChromaDB access)
+- AI service (multi-provider, OpenAI Agents SDK)
 
 Usage:
     from kk_utils import load_environment, setup_logging, ConfigLoader, RAGClient
-    
+    from kk_utils.ai import get_ai_service
+
     # For direct RAG access (no API):
     from kk_utils.rag import RAGEngine, RAGConfig
 
@@ -40,6 +42,36 @@ from kk_utils.rag import (
     SentenceChunker,
     EmbeddingProvider,
     get_embedding_function,
+)
+
+# Agent Tools infrastructure
+from kk_utils.agent_tools import (
+    agent_tool,
+    AgentRegistry,
+    get_registry,
+    register_tool,
+    get_tool,
+    execute_tool,
+    _auto_register,
+)
+
+# Persona & Factory
+from kk_utils.persona_config import PersonaConfig, load_persona, list_personas
+from kk_utils.factory import AgentMeFactory, AgentConfig
+
+# Skill Manifest
+from kk_utils.skill_manifest import SkillManifest, get_skill_manifest, discover_skills
+
+# AI Service (multi-provider, OpenAI Agents SDK)
+from kk_utils.ai import (
+    AIService,
+    CallContext,
+    TextResult,
+    SummaryResult,
+    RewriteResult,
+    TaskExtractionResult,
+    IntentClassificationResult,
+    get_ai_service,
 )
 
 __version__ = "1.0.0"
@@ -77,4 +109,35 @@ __all__ = [
     "SentenceChunker",
     "EmbeddingProvider",
     "get_embedding_function",
+
+    # Agent Tools
+    "agent_tool",
+    "AgentRegistry",
+    "get_registry",
+    "register_tool",
+    "get_tool",
+    "execute_tool",
+    "_auto_register",
+
+    # AI Service
+    "AIService",
+    "CallContext",
+    "TextResult",
+    "SummaryResult",
+    "RewriteResult",
+    "TaskExtractionResult",
+    "IntentClassificationResult",
+    "get_ai_service",
+
+    # Persona & Factory
+    "PersonaConfig",
+    "load_persona",
+    "list_personas",
+    "AgentConfig",
+    "AgentMeFactory",
+
+    # Skill Manifest
+    "SkillManifest",
+    "get_skill_manifest",
+    "discover_skills",
 ]
