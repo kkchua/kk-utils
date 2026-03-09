@@ -62,17 +62,20 @@ from kk_utils.factory import AgentMeFactory, AgentConfig
 # Skill Manifest
 from kk_utils.skill_manifest import SkillManifest, get_skill_manifest, discover_skills
 
-# AI Service (multi-provider, OpenAI Agents SDK)
-from kk_utils.ai import (
-    AIService,
-    CallContext,
-    TextResult,
-    SummaryResult,
-    RewriteResult,
-    TaskExtractionResult,
-    IntentClassificationResult,
-    get_ai_service,
-)
+# AI Service (multi-provider, OpenAI Agents SDK) — lazy import, requires openai package
+try:
+    from kk_utils.ai import (
+        AIService,
+        CallContext,
+        TextResult,
+        SummaryResult,
+        RewriteResult,
+        TaskExtractionResult,
+        IntentClassificationResult,
+        get_ai_service,
+    )
+except ImportError:
+    pass  # openai not installed — AI features unavailable
 
 __version__ = "1.0.0"
 __author__ = "KK"

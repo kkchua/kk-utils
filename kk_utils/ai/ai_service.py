@@ -131,7 +131,7 @@ class AIService:
 
     def __init__(
         self,
-        api_model: str = "openai/gpt-4o-mini",
+        api_model: str = "openai/gpt-5-nano",
         api_base_url: Optional[str] = None,
         api_key: Optional[str] = None,
         temperature: float = 0.7,
@@ -816,7 +816,7 @@ def get_ai_service(
         Configured AIService instance
     """
     if not hasattr(get_ai_service, "_instance"):
-        resolved_model = api_model or os.environ.get("API_MODEL", "openai/gpt-4o-mini")
+        resolved_model = api_model or os.environ.get("API_MODEL", "openai/gpt-5-nano")
         resolved_url = api_base_url or os.environ.get("AI_BASE_URL")
         get_ai_service._instance = AIService(
             api_model=resolved_model,
