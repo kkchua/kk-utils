@@ -275,7 +275,8 @@ def _field_annotation(field_name: str, field_def: dict) -> str:
     """Inline annotation string for the schema injection block."""
     ftype = field_def.get("type", "string")
     if "enum" in field_def:
-        return f'"{"\" | \"".join(field_def["enum"])}"'
+        separator = '" | "'
+        return f'"{separator.join(field_def["enum"])}"'
     parts = []
     mn = field_def.get("minLength")
     mx = field_def.get("maxLength")
