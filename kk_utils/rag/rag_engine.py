@@ -27,6 +27,9 @@ class RAGResult:
     confidence: float
     sources: List[str]
     message: str = "Query completed successfully"
+    retrieval_time_ms: float = 0.0
+    chunks_searched: int = 0
+    avg_distance: float = 0.0
     debug: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
     
@@ -388,6 +391,9 @@ class RAGEngine:
                 confidence=round(confidence, 6),
                 sources=list(sources),
                 message="Information retrieved successfully",
+                retrieval_time_ms=round(retrieval_time_ms, 2),
+                chunks_searched=self.collection.count(),
+                avg_distance=round(avg_distance, 3),
             )
             
             # Add debug info if requested

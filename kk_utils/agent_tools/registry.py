@@ -60,27 +60,60 @@ class AgentRegistry:
     # Registration
     # ------------------------------------------------------------------
 
-    def register(self, fn: Callable) -> None:
+    def register(self, fn: Callable, prefix: str = "") -> None:
         """
         Register a function decorated with @agent_tool.
 
         Args:
             fn: Function with __agent_tool__ attribute
+            prefix: Optional skill namespace prefix (e.g. "digital_me").
+                    When provided, the tool is registered under both
+                    "{prefix}__{id}" (used by the LLM) and the original
+                    "{id}" (for backward-compatible execute() calls).
         """
         if not hasattr(fn, "__agent_tool__"):
             logger.warning(f"Function {fn.__name__} is not decorated with @agent_tool — skipped")
             return
 
         tool_info = fn.__agent_tool__
-        tool_id = tool_info["id"]
+        original_id = tool_info["id"]
 
-        self._tools[tool_id] = {
-            "function": fn,
-            "info": tool_info,
-            "openai_schema": fn.__openai_schema__,
-        }
+        if prefix:
+            prefixed_id = f"{prefix}__{original_id}"
+            prefixed_schema = {
+                **fn.__openai_schema__,
+                "function": {
+                    **fn.__openai_schema__["function"],
+                    "name": prefixed_id,
+                },
+            }
+            prefixed_info = {**tool_info, "id": prefixed_id}
 
-        logger.info(f"Registered agent tool: {tool_id} tags={tool_info.get('tags', [])}")
+            # Primary entry: prefixed name shown to the LLM
+            self._tools[prefixed_id] = {
+                "function": fn,
+                "info": prefixed_info,
+                "openai_schema": prefixed_schema,
+            }
+            # Backward-compat alias: original name still works for execute()
+            # Marked as _alias=True so tag-based schema lookups skip it (avoid duplicates)
+            self._tools[original_id] = {
+                "function": fn,
+                "info": tool_info,
+                "openai_schema": fn.__openai_schema__,
+                "_alias": True,
+            }
+            logger.info(
+                f"Registered agent tool: {prefixed_id} (alias: {original_id}) "
+                f"tags={tool_info.get('tags', [])}"
+            )
+        else:
+            self._tools[original_id] = {
+                "function": fn,
+                "info": tool_info,
+                "openai_schema": fn.__openai_schema__,
+            }
+            logger.info(f"Registered agent tool: {original_id} tags={tool_info.get('tags', [])}")
 
     # ------------------------------------------------------------------
     # Lookup
@@ -101,11 +134,14 @@ class AgentRegistry:
         return [e["openai_schema"] for e in self._tools.values()]
 
     def get_tools_by_tag(self, tag: str) -> List[Dict]:
-        """Return tools whose tags include *tag*."""
+        """Return tools whose tags include *tag*.
+        Alias entries (backward-compat originals for prefixed tools) are excluded
+        so the LLM sees only the prefixed name, not both names.
+        """
         return [
             e["openai_schema"]
             for e in self._tools.values()
-            if tag in e["info"].get("tags", [])
+            if tag in e["info"].get("tags", []) and not e.get("_alias", False)
         ]
 
     def get_tools_for_tags(self, tags: List[str]) -> List[Dict]:
@@ -215,6 +251,12 @@ def _auto_register(module=None) -> None:
 
     Call at the bottom of any tools.py:
         _auto_register()
+
+    Skill prefix is auto-detected from the calling module path.
+    For a module named ``kk_agent_skills.digital_me.tools``, the prefix
+    ``digital_me`` is applied so the LLM sees ``digital_me__get_education``
+    instead of ``get_education``.  Modules outside the ``kk_agent_skills``
+    namespace are registered without a prefix.
     """
     import sys
     import inspect
@@ -224,13 +266,24 @@ def _auto_register(module=None) -> None:
         frame = sys._getframe(1)
         module_name = frame.f_globals.get("__name__", "")
         module = sys.modules.get(module_name)
+    else:
+        module_name = getattr(module, "__name__", "")
 
     if module is None:
         logger.warning("_auto_register: could not determine calling module")
         return
 
+    # Derive skill prefix from module path.
+    # Pattern: kk_agent_skills.<skill_name>.tools → prefix = <skill_name>
+    parts = module_name.split(".")
+    skill_prefix = (
+        parts[-2]
+        if len(parts) >= 3 and parts[0] == "kk_agent_skills" and parts[-1] == "tools"
+        else ""
+    )
+
     registry = get_registry()
     for attr_name in dir(module):
         obj = getattr(module, attr_name)
         if callable(obj) and hasattr(obj, "__agent_tool__"):
-            registry.register(obj)
+            registry.register(obj, prefix=skill_prefix)

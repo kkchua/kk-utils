@@ -281,10 +281,21 @@ class AIService:
         return {"response": result.response}
 
 
-    def _build_sdk_tools(self, openai_tool_dicts: List[Dict], dedup_cache: Dict) -> List:
-        """Convert AgentRegistry OpenAI-format dicts into SDK FunctionTool objects."""
+    def _build_sdk_tools(
+        self,
+        openai_tool_dicts: List[Dict],
+        dedup_cache: Dict,
+        trace_callback=None,
+    ) -> List:
+        """Convert AgentRegistry OpenAI-format dicts into SDK FunctionTool objects.
+
+        Thin wrapper: parse args, sanitize null strings, call registry, return JSON.
+        Each tool function owns its own data-fetching strategy (RAG vs structured).
+        """
+        import json as _json
         from kk_utils.agent_tools import get_registry
         registry = get_registry()
+
         sdk_tools = []
         for tool_def in openai_tool_dicts:
             fn_def = tool_def.get("function", {})
@@ -294,19 +305,31 @@ class AIService:
             description = fn_def.get("description", "")
             params_schema = fn_def.get("parameters", {"type": "object", "properties": {}})
 
-            async def on_invoke(ctx, args_json, _name=tool_name):
-                import json as _json
+            async def on_invoke(ctx, args_json, _name=tool_name, _trace=trace_callback):
                 try:
                     tool_args = _json.loads(args_json) if args_json else {}
                 except Exception:
                     tool_args = {}
-                dedup_key = f"{_name}:{_json.dumps(tool_args, sort_keys=True)}"
-                if dedup_key in dedup_cache:
-                    logger.debug(f"Tool dedup: {_name} — reusing cached result")
-                    return _json.dumps(dedup_cache[dedup_key])
+
+                # Sanitize LLM-injected 'null' strings for optional parameters
+                _null_vals = {"null", "NULL", "None", "none"}
+                tool_args = {k: (None if isinstance(v, str) and v in _null_vals else v) for k, v in tool_args.items()}
+                tool_args = {k: v for k, v in tool_args.items() if v is not None}
+
                 logger.debug(f"Tool call: {_name}({tool_args})")
                 result = registry.execute(_name, **tool_args)
-                dedup_cache[dedup_key] = result
+
+                # Emit trace events for RAG activity and unavailable data
+                if _trace and isinstance(result, dict):
+                    if result.get("source") == "rag":
+                        conf = result.get("confidence", 0.0)
+                        ms = result.get("retrieval_time_ms", 0.0)
+                        n = result.get("chunks_searched", 0)
+                        dist = result.get("avg_distance", 0.0)
+                        _trace(f"agent_me: {_name}: RAG confidence={conf:.3f} (avg_distance={dist:.3f}), {ms:.0f}ms, chunks_searched={n}")
+                    elif result.get("available") is False:
+                        _trace(f"agent_me: {_name}: no data in profile")
+
                 return _json.dumps(result)
 
             sdk_tools.append(FunctionTool(
@@ -434,7 +457,7 @@ class AIService:
 
         # Build SDK FunctionTool list from OpenAI dicts
         dedup_cache: Dict[str, Any] = {}
-        sdk_tools = self._build_sdk_tools(tools or [], dedup_cache)
+        sdk_tools = self._build_sdk_tools(tools or [], dedup_cache, trace_callback=trace_callback)
         if progress_callback is not None:
             sdk_tools.insert(0, self._build_progress_tool(progress_callback, max_plan_steps))
 
@@ -527,7 +550,13 @@ class AIService:
                 trace_callback("agent_me: final response received")
 
             self._on_usage(streamed, context, TextResult)
-            return last_text_response or streamed.final_output or ""
+            final = last_text_response or streamed.final_output or ""
+            # Guard: discard if response looks like a leaked plan-steps JSON object
+            # (report_progress args leaked as final_output when LLM produces no text)
+            if final and final.strip().startswith('{"steps":'):
+                logger.warning("chat_with_tools: discarding leaked plan-steps JSON as response")
+                final = ""
+            return final
 
         except Exception as e:
             logger.error(f"chat_with_tools failed: {e}", exc_info=True)
