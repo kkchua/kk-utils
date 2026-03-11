@@ -115,7 +115,11 @@ def _get_description(fn: Callable) -> str:
 
 
 def _build_schema_from_hints(fn: Callable) -> Dict[str, Any]:
-    """Build a JSON schema dict from a function's type hints."""
+    """Build a strict-compatible JSON schema dict from a function's type hints.
+
+    All parameters are listed as required. Optional/nullable params use
+    anyOf [type, null] — compatible with OpenAI strict schema mode.
+    """
     import typing
 
     sig = inspect.signature(fn)
@@ -136,10 +140,14 @@ def _build_schema_from_hints(fn: Callable) -> Dict[str, Any]:
 
         py_type = hints.get(param_name, str)
 
-        # Unwrap Optional[X] / Union[X, None]
+        # Detect Optional[X] / Union[X, None] — track nullability before unwrapping
+        is_nullable = False
         origin = getattr(py_type, "__origin__", None)
         if origin is not None:
-            args = [a for a in getattr(py_type, "__args__", []) if a is not type(None)]
+            type_args = getattr(py_type, "__args__", [])
+            if type(None) in type_args:
+                is_nullable = True
+            args = [a for a in type_args if a is not type(None)]
             py_type = args[0] if args else str
             origin = getattr(py_type, "__origin__", None)
 
@@ -147,19 +155,36 @@ def _build_schema_from_hints(fn: Callable) -> Dict[str, Any]:
         if origin is not None:
             py_type = origin
 
-        param_schema: Dict[str, Any] = {
-            "type": _py_type_to_json(py_type),
-            "description": _get_param_description(fn, param_name),
-        }
+        json_type = _py_type_to_json(py_type)
+        description = _get_param_description(fn, param_name)
 
-        if param.default is not inspect.Parameter.empty:
-            param_schema["default"] = param.default
+        # Surface non-None defaults in description so the LLM knows the default value
+        if (param.default is not inspect.Parameter.empty
+                and param.default is not None):
+            description = f"{description} (default: {param.default})".strip()
+
+        if is_nullable:
+            # Strict-compatible nullable: anyOf [concrete-type, null]
+            param_schema: Dict[str, Any] = {
+                "anyOf": [{"type": json_type}, {"type": "null"}],
+                "description": description,
+            }
         else:
-            required.append(param_name)
+            param_schema = {
+                "type": json_type,
+                "description": description,
+            }
 
+        # All params go in required for strict schema compliance
+        required.append(param_name)
         properties[param_name] = param_schema
 
-    return {"type": "object", "properties": properties, "required": required}
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": False,
+    }
 
 
 def _py_type_to_json(py_type) -> str:

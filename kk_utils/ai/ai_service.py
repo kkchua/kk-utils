@@ -33,8 +33,7 @@ from openai import AsyncOpenAI
 
 try:
     from agents import Agent as SDKAgent
-    from agents import Runner, trace, OpenAIChatCompletionsModel, AgentOutputSchema
-    from agents.tracing import agent_span, generation_span, function_span
+    from agents import Runner, trace, OpenAIChatCompletionsModel, AgentOutputSchema, ModelSettings, FunctionTool, ItemHelpers
     AGENTS_SDK_AVAILABLE = True
 except ImportError:
     AGENTS_SDK_AVAILABLE = False
@@ -43,9 +42,8 @@ except ImportError:
     trace = None
     OpenAIChatCompletionsModel = None
     AgentOutputSchema = None
-    agent_span = None
-    generation_span = None
-    function_span = None
+    ModelSettings = None
+    FunctionTool = None
 
 logger = logging.getLogger(__name__)
 
@@ -283,45 +281,95 @@ class AIService:
         return {"response": result.response}
 
 
-    # -------------------------------------------------------------------------
-    # report_progress tool schema — injected automatically when progress_callback is set
-    # -------------------------------------------------------------------------
+    def _build_sdk_tools(self, openai_tool_dicts: List[Dict], dedup_cache: Dict) -> List:
+        """Convert AgentRegistry OpenAI-format dicts into SDK FunctionTool objects."""
+        from kk_utils.agent_tools import get_registry
+        registry = get_registry()
+        sdk_tools = []
+        for tool_def in openai_tool_dicts:
+            fn_def = tool_def.get("function", {})
+            tool_name = fn_def.get("name", "")
+            if not tool_name:
+                continue
+            description = fn_def.get("description", "")
+            params_schema = fn_def.get("parameters", {"type": "object", "properties": {}})
 
-    _REPORT_PROGRESS_TOOL: Dict[str, Any] = {
-        "type": "function",
-        "function": {
-            "name": "report_progress",
-            "description": (
+            async def on_invoke(ctx, args_json, _name=tool_name):
+                import json as _json
+                try:
+                    tool_args = _json.loads(args_json) if args_json else {}
+                except Exception:
+                    tool_args = {}
+                dedup_key = f"{_name}:{_json.dumps(tool_args, sort_keys=True)}"
+                if dedup_key in dedup_cache:
+                    logger.debug(f"Tool dedup: {_name} — reusing cached result")
+                    return _json.dumps(dedup_cache[dedup_key])
+                logger.debug(f"Tool call: {_name}({tool_args})")
+                result = registry.execute(_name, **tool_args)
+                dedup_cache[dedup_key] = result
+                return _json.dumps(result)
+
+            sdk_tools.append(FunctionTool(
+                name=tool_name,
+                description=description,
+                params_json_schema=params_schema,
+                on_invoke_tool=on_invoke,
+            ))
+        return sdk_tools
+
+    def _build_progress_tool(self, progress_callback: Callable, max_plan_steps: int):
+        """Create a FunctionTool for report_progress with progress_callback wired in."""
+        schema = {
+            "type": "object",
+            "properties": {
+                "steps": {
+                    "type": "array",
+                    "description": "All plan steps with current status",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id":      {"type": "string", "description": "Step ID e.g. 1, 2, 3"},
+                            "content": {"type": "string", "description": "What this step does"},
+                            "status":  {
+                                "type": "string",
+                                "enum": ["pending", "in_progress", "completed", "failed"],
+                            },
+                        },
+                        "required": ["id", "content", "status"],
+                    },
+                }
+            },
+            "required": ["steps"],
+        }
+
+        async def on_invoke(ctx, args_json):
+            import json as _json
+            try:
+                steps = _json.loads(args_json).get("steps", []) if args_json else []
+            except Exception:
+                steps = []
+            if len(steps) > max_plan_steps:
+                logger.warning(f"report_progress: plan exceeds limit ({len(steps)} > {max_plan_steps})")
+                return _json.dumps({
+                    "error": f"Plan has {len(steps)} steps but limit is {max_plan_steps}. Consolidate your plan.",
+                    "max_allowed": max_plan_steps,
+                })
+            progress_callback(steps)
+            logger.debug(f"Progress update: {len(steps)} steps")
+            return _json.dumps({"acknowledged": True, "steps_recorded": len(steps)})
+
+        return FunctionTool(
+            name="report_progress",
+            description=(
                 "Report your current plan and progress. "
                 "Call FIRST with all steps as pending to share your plan before doing any work. "
                 "Then update individual steps to in_progress as you start them, "
                 "and completed or failed when done. "
                 "Keep plans concise and actionable."
             ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "steps": {
-                        "type": "array",
-                        "description": "All plan steps with current status",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "id": {"type": "string", "description": "Step ID e.g. 1, 2, 3"},
-                                "content": {"type": "string", "description": "What this step does"},
-                                "status": {
-                                    "type": "string",
-                                    "enum": ["pending", "in_progress", "completed", "failed"],
-                                },
-                            },
-                            "required": ["id", "content", "status"],
-                        },
-                    }
-                },
-                "required": ["steps"],
-            },
-        },
-    }
+            params_json_schema=schema,
+            on_invoke_tool=on_invoke,
+        )
 
     async def chat_with_tools(
         self,
@@ -336,15 +384,10 @@ class AIService:
         trace_callback: Optional[Callable[[str], None]] = None,
     ) -> str:
         """
-        Chat with native LLM tool calling.
+        Chat with tool calling via OpenAI Agents SDK.
 
-        The LLM decides which tools to call. This method executes the tool-call
-        loop: send message -> LLM picks tools -> execute via AgentRegistry -> feed
-        results back -> repeat until LLM produces a final text response.
-
-        When progress_callback is provided, a report_progress tool is injected
-        automatically. The LLM calls it to broadcast its plan and update step
-        status as it works. Progress calls do NOT count against max_iterations.
+        Uses Runner.run_streamed() so the SDK manages the tool-call loop automatically.
+        Streaming events drive trace_callback without manual span management.
 
         Args:
             message: Current user message
@@ -352,10 +395,10 @@ class AIService:
             system_prompt: System instruction injected before conversation
             conversation_history: Previous messages as [{"role":..., "content":...}]
             context: Call context for usage attribution
-            max_iterations: Max real tool-call rounds before giving up
+            max_iterations: Max real tool-call rounds (mapped to max_turns = iterations*2+1)
             progress_callback: Called with List[step_dict] on each report_progress call
             max_plan_steps: Max steps the LLM is allowed to plan (enforced in tool)
-            trace_callback: Called with a string event message at each pipeline stage (showcase mode)
+            trace_callback: Called with a string event at each pipeline stage (showcase mode)
 
         Returns:
             Final text response from the LLM.
@@ -364,185 +407,131 @@ class AIService:
             logger.warning("chat_with_tools: AI in mock mode")
             return "[Mock] Configure API_MODEL for real AI responses."
 
-        import json
-        from kk_utils.agent_tools import get_registry
+        if not AGENTS_SDK_AVAILABLE:
+            logger.error("chat_with_tools: OpenAI Agents SDK not available")
+            return "I encountered an error. Please try again."
 
-        registry = get_registry()
-
-        # Inject report_progress tool and add planning instructions to system prompt
-        active_tools = list(tools) if tools else []
+        # Build system prompt with optional progress workflow suffix
         effective_system = system_prompt
         if progress_callback is not None:
-            active_tools = [self._REPORT_PROGRESS_TOOL] + active_tools
             suffix_template = self._prompts.get("chat_with_tools", {}).get(
                 "progress_workflow_suffix",
-                "\n\nWORKFLOW — follow these steps in order:\n"
-                "1. Call report_progress with your full plan (all steps as pending).\n"
-                "2. Call report_progress again marking executing steps as in_progress, then call the tools.\n"
-                "3. After tool results are returned, call report_progress once more marking all finished steps as completed or failed.\n"
-                "4. Then give your final answer.\n"
+                "\n\nWORKFLOW:\n"
+                "1. Call report_progress ONCE with your full plan (all steps as pending).\n"
+                "2. Call the tools you need to gather information.\n"
+                "3. Give your final answer immediately after receiving tool results.\n"
+                "Do NOT call report_progress again after the tools. "
                 "Keep your plan to {max_plan_steps} steps or fewer.",
             )
             effective_system = system_prompt + suffix_template.format(max_plan_steps=max_plan_steps)
 
-        # Build initial message list
-        messages: List[Dict] = [{"role": "system", "content": effective_system}]
+        # Build message list — system prompt goes into agent.instructions only;
+        # the SDK adds it automatically, so do NOT include a system message here.
+        messages: List[Dict] = []
         if conversation_history:
             messages.extend(conversation_history)
         messages.append({"role": "user", "content": message})
 
-        openai_tools = active_tools if active_tools else None
+        # Build SDK FunctionTool list from OpenAI dicts
+        dedup_cache: Dict[str, Any] = {}
+        sdk_tools = self._build_sdk_tools(tools or [], dedup_cache)
+        if progress_callback is not None:
+            sdk_tools.insert(0, self._build_progress_tool(progress_callback, max_plan_steps))
 
-        # SDK tracing: outer trace + agent span wrap the entire tool-calling loop
-        # Inner generation_span and function_span are created per-LLM-call and per-tool-call
-        tool_names = [t["function"]["name"] for t in active_tools if t.get("function", {}).get("name") != "report_progress"]
-        _sdk = AGENTS_SDK_AVAILABLE
-        # Start trace first so it is the "current trace" when agent_span is created
-        _t = trace("kk_utils_ai") if _sdk else None
-        if _t:
-            _t.start(mark_as_current=True)
-        _a = agent_span("AIServiceAgent", tools=tool_names) if _sdk else None
-        if _a:
-            _a.start(mark_as_current=True)
+        agent = SDKAgent(
+            name="AIServiceAgent",
+            instructions=effective_system,
+            model=OpenAIChatCompletionsModel(model=self.model, openai_client=self.client),
+            tools=sdk_tools,
+            model_settings=ModelSettings(
+                extra_body={"max_completion_tokens": self.max_tokens}
+            ) if ModelSettings else None,
+        )
+
+        if trace_callback:
+            trace_callback("agent_me: calling LLM")
 
         try:
-            real_iterations = 0  # only real tool calls count; progress calls are free
-            emit_llm_trace = True  # suppress duplicate "calling LLM" after report_progress-only loops
-            _executed_tools: Dict[str, Any] = {}  # dedup cache across ALL iterations this turn
-
-            while real_iterations < max_iterations:
-                if trace_callback and emit_llm_trace:
-                    trace_callback("agent_me: calling LLM")
-                emit_llm_trace = True  # reset; will be set False below if only progress tools ran
-
-                # --- LLM call wrapped in generation_span ---
-                _gen = generation_span(input=list(messages), model=self.model) if _sdk else None
-                if _gen:
-                    _gen.start(mark_as_current=True)
-                try:
-                    response = await self.client.chat.completions.create(
-                        model=self.model,
-                        messages=messages,
-                        tools=openai_tools,
-                        tool_choice="auto" if openai_tools else None,
-                    )
-                finally:
-                    if _gen:
-                        choice0 = response.choices[0] if response.choices else None
-                        if choice0 and _gen.span_data:
-                            _gen.span_data.output = [choice0.message.model_dump(exclude_unset=False)]
-                        if response.usage and _gen.span_data:
-                            _gen.span_data.usage = {
-                                "input_tokens": response.usage.prompt_tokens,
-                                "output_tokens": response.usage.completion_tokens,
-                            }
-                        _gen.finish(reset_current=True)
-
-                choice = response.choices[0]
-
-                if choice.finish_reason == "tool_calls":
-                    messages.append(choice.message.model_dump(exclude_unset=False))
-                    if trace_callback:
-                        real_names = [tc.function.name for tc in choice.message.tool_calls if tc.function.name != "report_progress"]
-                        if real_names:
-                            trace_callback(f"agent_me: LLM requests tool(s): {', '.join(real_names)}")
-
-                    has_real_tool = False
-
-                    for tool_call in choice.message.tool_calls:
-                        tool_name = tool_call.function.name
+            last_text_response = ""
+            # call_id → tool_name mapping so output events know which tool produced them
+            call_id_to_tool: Dict[str, str] = {}
+            # call_ids whose on_invoke will return a cached result — suppress in trace
+            cached_call_ids: set = set()
+            with trace("kk_utils_ai"):
+                streamed = Runner.run_streamed(
+                    agent,
+                    messages,
+                    max_turns=max_iterations * 2 + 1,
+                )
+                async for event in streamed.stream_events():
+                    if event.type != "run_item_stream_event":
+                        continue
+                    item = event.item
+                    if item.type == "message_output_item":
+                        # Track the last non-empty text response.
+                        # The agent may emit its answer alongside a tool call;
+                        # the subsequent empty turn would otherwise blank final_output.
                         try:
-                            tool_args = json.loads(tool_call.function.arguments or "{}")
-                        except json.JSONDecodeError:
-                            tool_args = {}
-                        _dedup_key = f"{tool_name}:{json.dumps(tool_args, sort_keys=True)}"
-
+                            text = ItemHelpers.text_message_output(item)
+                            if text and text.strip():
+                                last_text_response = text
+                        except Exception:
+                            pass
+                    elif item.type == "tool_call_item":
+                        raw = getattr(item, "raw_item", None)
+                        tool_name = (
+                            getattr(item, "name", None)
+                            or getattr(raw, "name", None)
+                            or "tool"
+                        )
+                        call_id = getattr(raw, "call_id", None)
+                        if call_id:
+                            call_id_to_tool[call_id] = tool_name
                         if tool_name == "report_progress":
-                            steps = tool_args.get("steps", [])
-
-                            # Enforce max_plan_steps limit
-                            if len(steps) > max_plan_steps:
-                                tool_result = {
-                                    "error": f"Plan has {len(steps)} steps but limit is {max_plan_steps}. Consolidate your plan.",
-                                    "max_allowed": max_plan_steps,
-                                }
-                                logger.warning(f"report_progress: plan exceeds limit ({len(steps)} > {max_plan_steps})")
+                            if call_id:
+                                cached_call_ids.add(call_id)  # suppress its output event too
+                        elif trace_callback:
+                            # Check dedup cache: if this exact call was already executed,
+                            # mark as cached and skip the "executing" trace event.
+                            args_json = getattr(raw, "arguments", None) or "{}"
+                            try:
+                                tool_args = json.loads(args_json)
+                                dedup_key = f"{tool_name}:{json.dumps(tool_args, sort_keys=True)}"
+                            except Exception:
+                                tool_args = {}
+                                dedup_key = None
+                            if dedup_key is not None and dedup_key in dedup_cache:
+                                if call_id:
+                                    cached_call_ids.add(call_id)
                             else:
-                                if progress_callback is not None:
-                                    progress_callback(steps)
-                                logger.debug(f"Progress update: {len(steps)} steps")
-                                tool_result = {"acknowledged": True, "steps_recorded": len(steps)}
+                                # Build compact args string — skip None/empty values
+                                args_str = ", ".join(
+                                    f"{k}={v!r}"
+                                    for k, v in tool_args.items()
+                                    if v is not None and v != "" and v != []
+                                ) if tool_args else ""
+                                label = f"{tool_name}({args_str})" if args_str else tool_name
+                                trace_callback(f"agent_me: executing {label}")
+                    elif item.type == "tool_call_output_item":
+                        if trace_callback:
+                            raw = getattr(item, "raw_item", None)
+                            call_id = (
+                                raw.get("call_id") if isinstance(raw, dict)
+                                else getattr(raw, "call_id", None)
+                            )
+                            if (call_id or "") not in cached_call_ids:
+                                resolved_tool = call_id_to_tool.get(call_id or "", "tool")
+                                trace_callback(f"agent_me: {resolved_tool}: done")
 
-                            messages.append({
-                                "role": "tool",
-                                "tool_call_id": tool_call.id,
-                                "content": json.dumps(tool_result),
-                            })
-                            # report_progress does NOT count against max_iterations
+            if trace_callback:
+                trace_callback("agent_me: final response received")
 
-                        else:
-                            has_real_tool = True
-
-                            # Deduplicate: same tool + same args in one batch → execute once, reuse result
-                            if _dedup_key in _executed_tools:
-                                result = _executed_tools[_dedup_key]
-                                logger.debug(f"Tool dedup: {tool_name} (same args) already ran this batch — reusing result")
-                            else:
-                                logger.debug(f"Tool call: {tool_name}({tool_args})")
-                                if trace_callback:
-                                    trace_callback(f"agent_me: executing {tool_name}")
-
-                                # --- tool execution wrapped in function_span ---
-                                _fn = function_span(name=tool_name, input=json.dumps(tool_args)) if _sdk else None
-                                if _fn:
-                                    _fn.start(mark_as_current=True)
-                                try:
-                                    result = registry.execute(tool_name, **tool_args)
-                                finally:
-                                    if _fn:
-                                        if _fn.span_data:
-                                            _fn.span_data.output = json.dumps(result)[:500]
-                                        _fn.finish(reset_current=True)
-
-                                _executed_tools[_dedup_key] = result
-                                if trace_callback:
-                                    trace_callback(f"agent_me: {tool_name} done")
-
-                            logger.debug(f"Tool result [{tool_name}]: {str(result)[:200]}")
-                            messages.append({
-                                "role": "tool",
-                                "tool_call_id": tool_call.id,
-                                "content": json.dumps(result),
-                            })
-
-                    if has_real_tool:
-                        real_iterations += 1
-                    else:
-                        # Only report_progress was called — suppress next "calling LLM" trace
-                        emit_llm_trace = False
-
-                elif choice.finish_reason == "stop":
-                    self._on_usage(response, context, TextResult)
-                    if trace_callback:
-                        trace_callback("agent_me: final response received")
-                    return choice.message.content or ""
-
-                else:
-                    logger.warning(f"chat_with_tools: unexpected finish_reason={choice.finish_reason!r}")
-                    break
-
-            logger.warning("chat_with_tools: max_iterations reached without final response")
-            return "I am having trouble processing your request. Please try again."
+            self._on_usage(streamed, context, TextResult)
+            return last_text_response or streamed.final_output or ""
 
         except Exception as e:
             logger.error(f"chat_with_tools failed: {e}", exc_info=True)
             return "I encountered an error. Please try again."
-
-        finally:
-            if _a:
-                _a.finish(reset_current=True)
-            if _t:
-                _t.finish(reset_current=True)
 
     async def generate_structured(
         self,
@@ -708,6 +697,9 @@ class AIService:
                 instructions=system_prompt,
                 model=model,
                 output_type=wrapped_output,
+                model_settings=ModelSettings(
+                    extra_body={"max_completion_tokens": self.max_tokens}
+                ) if ModelSettings else None,
             )
 
             user_messages = [{"role": "user", "content": user_text}]
