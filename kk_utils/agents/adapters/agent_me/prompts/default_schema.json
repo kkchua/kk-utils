@@ -1,0 +1,100 @@
+{
+  "adapter_type": "agent_me",
+  "description": "Digital twin agent with skills and tools",
+  "skills": ["digital_me", "notes", "web_search"],
+  "skill_tags": ["digital_me", "notes", "web_search"],
+  "tools": [
+    {
+      "name": "get_work_experience",
+      "description": "Retrieve Keng Koon's work experience and career history",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "get_skills",
+      "description": "List technical skills and competencies",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "category": {
+            "type": "string",
+            "description": "Filter by category (optional)"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "get_projects",
+      "description": "Retrieve information about past projects",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "get_education",
+      "description": "Get educational background and certifications",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "search_digital_me",
+      "description": "Search personal knowledge base for specific information",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Search query"
+          }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "create_note",
+      "description": "Create a new note",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Note title"
+          },
+          "content": {
+            "type": "string",
+            "description": "Note content"
+          }
+        },
+        "required": ["title", "content"]
+      }
+    },
+    {
+      "name": "web_search",
+      "description": "Search the web for current information",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Search query"
+          }
+        },
+        "required": ["query"]
+      }
+    }
+  ],
+  "_validation_rules": {
+    "max_tools_per_call": 10,
+    "require_tool_for_factual_claims": true,
+    "allowed_personas": ["kengkoon", "agent_me"]
+  }
+}

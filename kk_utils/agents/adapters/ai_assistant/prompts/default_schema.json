@@ -1,0 +1,11 @@
+{
+  "adapter_type": "ai_assistant",
+  "description": "General conversational AI assistant",
+  "skills": [],
+  "skill_tags": [],
+  "tools": [],
+  "_validation_rules": {
+    "max_tools_per_call": 0,
+    "pure_conversation": true
+  }
+}
