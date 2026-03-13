@@ -205,9 +205,10 @@ class AIService:
         max_length: int = 150,
         bullet_points: bool = True,
         context: Optional[CallContext] = None,
+        prompt_template: Optional[str] = None,
     ) -> SummaryResult:
         """Summarize text with configurable length and bullet points."""
-        system_prompt = self._build_summarize_prompt(max_length, bullet_points)
+        system_prompt = self._build_summarize_prompt(max_length, bullet_points, prompt_template)
         return await self._call_ai(
             system_prompt=system_prompt,
             user_text=text,
@@ -221,9 +222,10 @@ class AIService:
         tone: str = "professional",
         style: Optional[str] = None,
         context: Optional[CallContext] = None,
+        prompt_template: Optional[str] = None,
     ) -> RewriteResult:
         """Rewrite text with a different tone/style."""
-        system_prompt = self._build_rewrite_prompt(tone, style)
+        system_prompt = self._build_rewrite_prompt(tone, style, prompt_template)
         return await self._call_ai(
             system_prompt=system_prompt,
             user_text=text,
@@ -235,9 +237,10 @@ class AIService:
         self,
         text: str,
         context: Optional[CallContext] = None,
+        prompt_template: Optional[str] = None,
     ) -> TaskExtractionResult:
         """Extract actionable tasks from text."""
-        system_prompt = self._build_extract_tasks_prompt()
+        system_prompt = self._build_extract_tasks_prompt(prompt_template)
         return await self._call_ai(
             system_prompt=system_prompt,
             user_text=text,
@@ -249,9 +252,10 @@ class AIService:
         self,
         text: str,
         context: Optional[CallContext] = None,
+        prompt_template: Optional[str] = None,
     ) -> IntentClassificationResult:
         """Classify user intent and extract entities."""
-        system_prompt = self._build_classify_intent_prompt()
+        system_prompt = self._build_classify_intent_prompt(prompt_template)
         return await self._call_ai(
             system_prompt=system_prompt,
             user_text=text,
@@ -405,6 +409,7 @@ class AIService:
         progress_callback: Optional[Callable[[List[Dict]], None]] = None,
         max_plan_steps: int = 8,
         trace_callback: Optional[Callable[[str], None]] = None,
+        agent_name: Optional[str] = None,  # For trace name customization
     ) -> str:
         """
         Chat with tool calling via OpenAI Agents SDK.
@@ -480,7 +485,8 @@ class AIService:
             call_id_to_tool: Dict[str, str] = {}
             # call_ids whose on_invoke will return a cached result — suppress in trace
             cached_call_ids: set = set()
-            with trace("kk_utils_ai"):
+            trace_name = agent_name if agent_name else "kk_utils_ai"
+            with trace(trace_name):
                 streamed = Runner.run_streamed(
                     agent,
                     messages,
@@ -595,26 +601,29 @@ class AIService:
 
     def _load_prompts(self) -> Dict[str, Dict]:
         """
-        Load all prompt templates from the prompts/ directory next to this file.
+        Load core prompt templates from kk_utils/ai/prompts/.
+
+        These are infrastructure-level prompts (e.g., chat_with_tools workflow).
+        Skill-specific prompts are loaded by skills themselves when needed.
 
         Files MUST be saved as UTF-8 to support multilingual content (Chinese, etc.).
         Reading uses encoding="utf-8" explicitly.
-        When writing prompt files programmatically, always use:
-            json.dumps(data, ensure_ascii=False, indent=2)
-        to preserve non-ASCII characters in readable form rather than \\uXXXX escapes.
         """
-        prompts_dir = Path(__file__).parent / "prompts"
         prompts: Dict[str, Dict] = {}
-        if prompts_dir.is_dir():
-            for path in sorted(prompts_dir.glob("*.yaml")):
+        
+        # Load core prompts from kk_utils/ai/prompts/
+        core_prompts_dir = Path(__file__).parent / "prompts"
+        if core_prompts_dir.is_dir():
+            for path in sorted(core_prompts_dir.glob("*.yaml")):
                 try:
                     import yaml as _yaml
                     raw = _yaml.safe_load(path.read_text(encoding="utf-8")) or {}
                     prompts[path.stem] = self._normalize_prompt(raw)
                 except Exception as e:
-                    logger.warning(f"Failed to load prompt file {path.name}: {e}")
+                    logger.warning(f"Failed to load core prompt file {path.name}: {e}")
         else:
-            logger.warning(f"Prompts directory not found: {prompts_dir}")
+            logger.warning(f"Core prompts directory not found: {core_prompts_dir}")
+            
         return prompts
 
     @staticmethod
@@ -660,27 +669,43 @@ class AIService:
         )
         logger.info(f"Saved prompt: {path}")
 
-    def _build_summarize_prompt(self, max_length: int, bullet_points: bool) -> str:
+    def _build_summarize_prompt(self, max_length: int, bullet_points: bool, prompt_template: Optional[str] = None) -> str:
+        """Build summarize prompt with optional custom template."""
+        if prompt_template:
+            return prompt_template
+        
         p = self._prompts.get("summarize", {})
         bullet_instruction = p.get("bullet_instruction", "") if bullet_points else ""
         template = p.get("system", "You are a summarization assistant. Summarize in {max_length} words{bullet_instruction}.")
         return template.format(max_length=max_length, bullet_instruction=bullet_instruction)
 
-    def _build_rewrite_prompt(self, tone: str, style: Optional[str]) -> str:
+    def _build_rewrite_prompt(self, tone: str, style: Optional[str], prompt_template: Optional[str] = None) -> str:
+        """Build rewrite prompt with optional custom template."""
+        if prompt_template:
+            return prompt_template
+        
         p = self._prompts.get("rewrite", {})
         style_tpl = p.get("style_instruction_template", " and {style} style")
         style_instruction = style_tpl.format(style=style) if style else ""
         template = p.get("system", "You are a rewriting assistant. Tone: {tone}{style_instruction}.")
         return template.format(tone=tone, style_instruction=style_instruction)
 
-    def _build_extract_tasks_prompt(self) -> str:
+    def _build_extract_tasks_prompt(self, prompt_template: Optional[str] = None) -> str:
+        """Build extract tasks prompt with optional custom template."""
+        if prompt_template:
+            return prompt_template
+        
         return self._prompts.get("extract_tasks", {}).get(
-            "system", "You are a task extraction assistant."
+            "system", "You are a task extraction assistant. Extract actionable tasks from the text."
         )
 
-    def _build_classify_intent_prompt(self) -> str:
+    def _build_classify_intent_prompt(self, prompt_template: Optional[str] = None) -> str:
+        """Build classify intent prompt with optional custom template."""
+        if prompt_template:
+            return prompt_template
+        
         return self._prompts.get("classify_intent", {}).get(
-            "system", "You are an intent classification assistant."
+            "system", "You are an intent classification assistant. Classify the user's intent."
         )
 
     # -------------------------------------------------------------------------

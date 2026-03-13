@@ -42,6 +42,19 @@ class PersonaConfig:
     skills: List[str]     # kk_agent_skills module names to import
     skill_tags: List[str] # tool registry tags to include
     system_prompt: str
+    # NEW: Adapter configuration (for Master Agent architecture)
+    adapter_type: Optional[str] = None  # e.g., "agent_me", "ai_assistant"
+    adapter_prompt_template: Optional[str] = "default"  # prompts/{template}.txt
+    adapter_schema: Optional[str] = None  # prompts/{schema}.json
+    
+    def __post_init__(self):
+        """Auto-detect adapter_type if not specified."""
+        if self.adapter_type is None:
+            # Auto-detect: has skills -> agent_me, no skills -> ai_assistant
+            if self.skills:
+                self.adapter_type = "agent_me"
+            else:
+                self.adapter_type = "ai_assistant"
 
 
 def _load_yaml(config_path: Path) -> Dict:
@@ -84,6 +97,9 @@ def load_persona(
         skills=raw.get("skills", []),
         skill_tags=raw.get("skill_tags", []),
         system_prompt=raw.get("system_prompt", "You are a helpful AI assistant.").strip(),
+        adapter_type=raw.get("adapter_type"),
+        adapter_prompt_template=raw.get("adapter_prompt_template", "default"),
+        adapter_schema=raw.get("adapter_schema"),
     )
 
 
@@ -108,5 +124,8 @@ def list_personas(config_path: Path) -> List[PersonaConfig]:
             skills=raw.get("skills", []),
             skill_tags=raw.get("skill_tags", []),
             system_prompt=raw.get("system_prompt", "You are a helpful AI assistant.").strip(),
+            adapter_type=raw.get("adapter_type"),
+            adapter_prompt_template=raw.get("adapter_prompt_template", "default"),
+            adapter_schema=raw.get("adapter_schema"),
         ))
     return result

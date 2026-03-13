@@ -138,7 +138,8 @@ def _build_schema_from_hints(fn: Callable) -> Dict[str, Any]:
         if param_name == "self":
             continue
 
-        py_type = hints.get(param_name, str)
+        original_type = hints.get(param_name, str)
+        py_type = original_type
 
         # Detect Optional[X] / Union[X, None] — track nullability before unwrapping
         is_nullable = False
@@ -151,10 +152,7 @@ def _build_schema_from_hints(fn: Callable) -> Dict[str, Any]:
             py_type = args[0] if args else str
             origin = getattr(py_type, "__origin__", None)
 
-        # Unwrap generic aliases: list[str] → list
-        if origin is not None:
-            py_type = origin
-
+        # Build JSON schema with proper items for arrays
         json_type = _py_type_to_json(py_type)
         description = _get_param_description(fn, param_name)
 
@@ -163,9 +161,28 @@ def _build_schema_from_hints(fn: Callable) -> Dict[str, Any]:
                 and param.default is not None):
             description = f"{description} (default: {param.default})".strip()
 
-        if is_nullable:
+        # Handle array types with items definition
+        param_schema: Dict[str, Any] = {}
+        if json_type == "array":
+            # Extract item type from list[T] or Optional[list[T]]
+            item_type = _get_list_item_type(original_type)
+            items_schema = _build_items_schema(item_type)
+            param_schema = {
+                "type": "array",
+                "items": items_schema,
+                "description": description,
+            }
+            if is_nullable:
+                param_schema = {
+                    "anyOf": [
+                        {"type": "array", "items": items_schema},
+                        {"type": "null"}
+                    ],
+                    "description": description,
+                }
+        elif is_nullable:
             # Strict-compatible nullable: anyOf [concrete-type, null]
-            param_schema: Dict[str, Any] = {
+            param_schema = {
                 "anyOf": [{"type": json_type}, {"type": "null"}],
                 "description": description,
             }
@@ -185,6 +202,29 @@ def _build_schema_from_hints(fn: Callable) -> Dict[str, Any]:
         "required": required,
         "additionalProperties": False,
     }
+
+
+def _get_list_item_type(py_type) -> type:
+    """Extract the item type from list[T] or Optional[list[T]]."""
+    origin = getattr(py_type, "__origin__", None)
+    if origin is not None:
+        args = getattr(py_type, "__args__", [])
+        # Handle Optional[list[T]] - filter out NoneType
+        non_none_args = [a for a in args if a is not type(None)]
+        if non_none_args:
+            py_type = non_none_args[0]
+            origin = getattr(py_type, "__origin__", None)
+            args = getattr(py_type, "__args__", [])
+        # Return first type arg for list[T]
+        if origin in (list, ):
+            return args[0] if args else str
+    return str
+
+
+def _build_items_schema(item_type: type) -> Dict[str, Any]:
+    """Build JSON schema for array items."""
+    json_type = _py_type_to_json(item_type)
+    return {"type": json_type}
 
 
 def _py_type_to_json(py_type) -> str:
