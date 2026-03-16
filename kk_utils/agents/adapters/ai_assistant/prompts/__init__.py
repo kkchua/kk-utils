@@ -1,1 +1,0 @@
-"""AI Assistant adapter prompts."""

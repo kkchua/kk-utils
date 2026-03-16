@@ -32,25 +32,21 @@ class AIAssistantAdapter(BaseAgentAdapter):
     
     def get_skill_tags(self) -> List[str]:
         return self.DEFAULT_SKILL_TAGS
-    
-    def build_system_prompt(self, persona: PersonaConfig) -> str:
-        if persona.system_prompt and persona.system_prompt.strip():
-            return persona.system_prompt
-        template_name = persona.adapter_prompt_template or "default"
-        try:
-            return self.load_prompt_template(template_name)
-        except FileNotFoundError:
-            return self._get_fallback_prompt()
-    
-    def _get_fallback_prompt(self) -> str:
-        return """You are a helpful, friendly AI assistant.
 
-Guidelines:
-- Be concise but thorough
-- Be friendly and approachable
-- Provide accurate information
-- Ask clarifying questions when needed
-"""
+    def get_tools_config(self, persona: Optional[PersonaConfig]) -> Optional[Dict[str, Any]]:
+        """Load tools config from schema."""
+        return super().get_tools_config(persona)
+
+    def build_system_prompt(self, persona: "PersonaConfig") -> str:
+        """
+        Build system prompt for AI Assistant.
+
+        NOTE: This method is kept for backward compatibility but is NOT used.
+        MasterAgent now controls all system prompt loading via _load_system_prompt().
+        """
+        # This should not be called - MasterAgent handles prompt loading
+        logger.warning("build_system_prompt() called - this should be handled by MasterAgent")
+        return ""
     
     async def execute_chat(
         self,

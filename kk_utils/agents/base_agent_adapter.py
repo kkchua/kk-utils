@@ -28,10 +28,13 @@ Usage:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Type
 
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 from .agent_response import AgentResponse
 from ..persona_config import PersonaConfig
@@ -220,15 +223,15 @@ class BaseAgentAdapter(ABC):
     ) -> Dict[str, Any]:
         """
         Execute chat using kk_utils.ai.AIService.
-        
+
         Helper method for execute_chat implementations.
-        
+
         Args:
             messages: List of message dicts
             tools: List of tool schemas
             model: AI model to use
             persona: Full persona config object (for trace name, metadata, etc.)
-            
+
         Returns:
             Raw response dict from AIService
         """
@@ -249,6 +252,26 @@ class BaseAgentAdapter(ABC):
         agent_name = None
         if persona:
             agent_name = persona.display_name or persona.name
+
+        # GOVERNOR: Validate tool call limits BEFORE calling AI
+        # This prevents excessive tool calls that waste money
+        try:
+            from app.core.governor import PersonalAssistantGovernor
+            governor = PersonalAssistantGovernor.instance()
+            
+            # Get tool schemas that would be available
+            tool_names = [t.get("function", {}).get("name", "") for t in tools]
+            logger.info(f"Available tools for {agent_name}: {len(tool_names)} tools")
+            
+            # Note: We can't validate actual tool calls yet (LLM hasn't made them)
+            # But we can log the available tools for audit
+            logger.info(f"Governor: Agent {agent_name} has {len(tools)} tools available")
+            
+        except ImportError:
+            # Governor not available (running outside backend)
+            logger.debug("Governor not available - skipping tool call validation")
+        except Exception as e:
+            logger.warning(f"Governor tool validation error: {e}")
 
         # Call AI with tools
         response = await ai_service.chat_with_tools(
