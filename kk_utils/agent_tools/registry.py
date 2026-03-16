@@ -131,18 +131,26 @@ class AgentRegistry:
 
     def get_all_tools(self) -> List[Dict]:
         """Return all tools as OpenAI-compatible schemas."""
-        return [e["openai_schema"] for e in self._tools.values()]
+        result = []
+        for e in self._tools.values():
+            schema = e["openai_schema"].copy()
+            # Add function reference for accessing __agent_tool__
+            schema["function_ref"] = e["function"]
+            result.append(schema)
+        return result
 
     def get_tools_by_tag(self, tag: str) -> List[Dict]:
         """Return tools whose tags include *tag*.
         Alias entries (backward-compat originals for prefixed tools) are excluded
         so the LLM sees only the prefixed name, not both names.
         """
-        return [
-            e["openai_schema"]
-            for e in self._tools.values()
-            if tag in e["info"].get("tags", []) and not e.get("_alias", False)
-        ]
+        result = []
+        for e in self._tools.values():
+            if tag in e["info"].get("tags", []) and not e.get("_alias", False):
+                schema = e["openai_schema"].copy()
+                schema["function_ref"] = e["function"]
+                result.append(schema)
+        return result
 
     def get_tools_for_tags(self, tags: List[str]) -> List[Dict]:
         """Return tools matching ANY of the provided tags (deduped)."""
@@ -172,6 +180,9 @@ class AgentRegistry:
         """
         Execute a tool by ID.
 
+        Routes through skill handler if registered for this tool.
+        Otherwise executes tool function directly.
+
         Returns:
             Tool result dict, or {"error": "..."} on failure.
         """
@@ -180,11 +191,63 @@ class AgentRegistry:
             return {"error": f"Tool '{tool_id}' not found"}
 
         try:
-            result = entry["function"](**kwargs)
-            return result if isinstance(result, dict) else {"result": result}
+            # Try to get skill handler for this tool
+            handler = self._get_skill_handler_for_tool(tool_id, entry["info"])
+            
+            if handler:
+                # Execute via skill handler
+                from ..agents.skill_handlers import SkillContext
+                context = SkillContext(
+                    user_id=kwargs.get("user_id", "anonymous"),
+                    user_role=kwargs.get("user_role", "demo"),
+                )
+                
+                import asyncio
+                if asyncio.iscoroutinefunction(handler.handle):
+                    # Need to run async - return async result
+                    # This will be handled by AIService._build_sdk_tools
+                    result = entry["function"](**kwargs)
+                else:
+                    result = handler.handle(tool_id, {"name": tool_id, "arguments": kwargs}, context)
+                
+                return result if isinstance(result, dict) else {"result": result}
+            else:
+                # Execute tool function directly
+                result = entry["function"](**kwargs)
+                return result if isinstance(result, dict) else {"result": result}
+                
         except Exception as e:
             logger.error(f"Tool execution failed [{tool_id}]: {e}", exc_info=True)
             return {"error": str(e)}
+    
+    def _get_skill_handler_for_tool(self, tool_id: str, tool_info: dict):
+        """
+        Get skill handler for a tool if registered.
+        
+        Args:
+            tool_id: Tool ID
+            tool_info: Tool metadata
+        
+        Returns:
+            Skill handler instance or None
+        """
+        try:
+            from ..agents.skill_handlers import SkillHandlerRegistry
+            handler_registry = SkillHandlerRegistry.instance()
+            
+            # Get handler type from tool metadata
+            handler_type = tool_info.get("handler_type", "standard")
+            
+            # Get handler from registry
+            handler = handler_registry.get_handler(handler_type)
+            
+            if handler and handler.can_handle(tool_info.get("skill_name", ""), {"name": tool_id}):
+                return handler
+            
+        except Exception as e:
+            logger.debug(f"Failed to get skill handler for {tool_id}: {e}")
+        
+        return None
 
     # ------------------------------------------------------------------
     # Introspection

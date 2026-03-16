@@ -83,51 +83,17 @@ class AgentMeAdapter(BaseAgentAdapter):
     def get_tools_config(self, persona: Optional[PersonaConfig]) -> Optional[Dict[str, Any]]:
         """Load tools config from schema."""
         return super().get_tools_config(persona)
-    
-    def build_system_prompt(self, persona: PersonaConfig) -> str:
+
+    def build_system_prompt(self, persona: "PersonaConfig") -> str:
         """
         Build system prompt for AgentMe.
-        
-        Priority:
-        1. persona.system_prompt (from YAML config) - if explicitly set
-        2. adapter_prompt_template (from YAML config) - load from file
-        3. default.txt (fallback)
-        
-        Args:
-            persona: Persona configuration
-            
-        Returns:
-            System prompt string
+
+        NOTE: This method is kept for backward compatibility but is NOT used.
+        MasterAgent now controls all system prompt loading via _load_system_prompt().
         """
-        # Check if persona has explicit system_prompt
-        if persona.system_prompt and persona.system_prompt.strip():
-            # Persona config overrides template
-            return persona.system_prompt
-        
-        # Load from template
-        template_name = persona.adapter_prompt_template or "default"
-        try:
-            return self.load_prompt_template(template_name)
-        except FileNotFoundError:
-            logger.warning(f"Prompt template '{template_name}' not found, using fallback")
-            # Fallback to minimal prompt
-            return self._get_fallback_prompt()
-    
-    def _get_fallback_prompt(self) -> str:
-        """Fallback system prompt when template is not found."""
-        return """You are AgentMe, a digital twin assistant.
-
-You have access to:
-- Personal knowledge base (digital_me)
-- Note management
-- Web search
-
-Guidelines:
-- Speak in first person
-- Be professional and helpful
-- Use tools to look up specific information
-- Admit when you don't know something
-"""
+        # This should not be called - MasterAgent handles prompt loading
+        logger.warning("build_system_prompt() called - this should be handled by MasterAgent")
+        return ""
     
     async def execute_chat(
         self,
