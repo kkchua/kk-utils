@@ -84,6 +84,7 @@ class ArticleGenerationService:
         topic: str,
         db_session: Session,
         category: Optional[str] = None,
+        category_id: Optional[int] = None,
         tone: str = "technical",
         style_hints: Optional[str] = None,
         num_search_results: int = 4,
@@ -94,7 +95,8 @@ class ArticleGenerationService:
         Args:
             topic: Article topic / subject
             db_session: Active SQLAlchemy session for saving the draft
-            category: Optional category label
+            category: Optional category label (ignored if category_id is set; for backward compat)
+            category_id: Optional category FK (use this when creating BlogPost)
             tone: Writing tone — technical | accessible | reference
             style_hints: Optional extra style instructions
             num_search_results: Number of Tavily search results to use
@@ -145,7 +147,7 @@ class ArticleGenerationService:
             slug=slug,
             content=article.content,
             excerpt=article.excerpt[:500],
-            category=category,
+            category_id=category_id,
             tags=article.tags,
             status="draft",
             author_id=None,
@@ -168,7 +170,7 @@ class ArticleGenerationService:
             content=post.content,
             excerpt=post.excerpt or "",
             tags=post.tags or [],
-            category=post.category,
+            category=post.category_obj.name if post.category_obj else None,
             search_results_used=len(search_results.results),
             post_id=str(post.id),
         )

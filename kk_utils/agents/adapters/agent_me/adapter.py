@@ -26,7 +26,6 @@ from typing import List, Dict, Any, Optional
 
 from kk_utils.persona_config import PersonaConfig
 from kk_utils.agents.base_agent_adapter import BaseAgentAdapter
-from kk_utils.agents.agent_response import AgentResponse
 
 logger = logging.getLogger(__name__)
 
@@ -83,110 +82,4 @@ class AgentMeAdapter(BaseAgentAdapter):
     def get_tools_config(self, persona: Optional[PersonaConfig]) -> Optional[Dict[str, Any]]:
         """Load tools config from schema."""
         return super().get_tools_config(persona)
-    
-    def build_system_prompt(self, persona: PersonaConfig) -> str:
-        """
-        Build system prompt for AgentMe.
-        
-        Priority:
-        1. persona.system_prompt (from YAML config) - if explicitly set
-        2. adapter_prompt_template (from YAML config) - load from file
-        3. default.txt (fallback)
-        
-        Args:
-            persona: Persona configuration
-            
-        Returns:
-            System prompt string
-        """
-        # Check if persona has explicit system_prompt
-        if persona.system_prompt and persona.system_prompt.strip():
-            # Persona config overrides template
-            return persona.system_prompt
-        
-        # Load from template
-        template_name = persona.adapter_prompt_template or "default"
-        try:
-            return self.load_prompt_template(template_name)
-        except FileNotFoundError:
-            logger.warning(f"Prompt template '{template_name}' not found, using fallback")
-            # Fallback to minimal prompt
-            return self._get_fallback_prompt()
-    
-    def _get_fallback_prompt(self) -> str:
-        """Fallback system prompt when template is not found."""
-        return """You are AgentMe, a digital twin assistant.
 
-You have access to:
-- Personal knowledge base (digital_me)
-- Note management
-- Web search
-
-Guidelines:
-- Speak in first person
-- Be professional and helpful
-- Use tools to look up specific information
-- Admit when you don't know something
-"""
-    
-    async def execute_chat(
-        self,
-        messages: List[Dict[str, str]],
-        tools: List[Dict[str, Any]],
-        model: str,
-        persona: Optional["PersonaConfig"] = None,
-    ) -> AgentResponse:
-        """
-        Execute chat with tools.
-        
-        Args:
-            messages: List of message dicts
-            tools: List of tool schemas
-            model: AI model to use
-            persona: Full persona config object (for trace name, metadata, etc.)
-            
-        Returns:
-            AgentResponse with the AI reply
-        """
-        try:
-            # Execute chat using base class helper
-            # Pass persona for trace name and metadata extraction
-            response_data = await self._execute_chat_with_tools(
-                messages=messages,
-                tools=tools,
-                model=model,
-                persona=persona,
-            )
-            
-            response_text = response_data.get("response", "")
-            
-            # Extract metadata from persona if available
-            metadata = {
-                "model": model,
-                "tool_count": len(tools),
-            }
-            if persona:
-                metadata["persona_name"] = persona.name
-                metadata["persona_display_name"] = persona.display_name
-                metadata["collection"] = persona.collection
-            
-            return AgentResponse(
-                response_text=response_text,
-                agent_type="agent_me",
-                persona_name=persona.name if persona else "agent_me",
-                collection=persona.collection if persona else "agent_me",
-                tools_available=len(tools),
-                metadata=metadata,
-            )
-            
-        except Exception as e:
-            logger.error(f"AgentMeAdapter chat failed: {e}", exc_info=True)
-            return AgentResponse(
-                response_text="I encountered an error. Please try again.",
-                agent_type="agent_me",
-                persona_name=persona.name if persona else "agent_me",
-                collection=persona.collection if persona else "agent_me",
-                tools_available=len(tools),
-                error=f"chat_failed: {str(e)}",
-                success=False,
-            )

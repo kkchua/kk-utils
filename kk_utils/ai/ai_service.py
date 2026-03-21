@@ -22,10 +22,12 @@ from __future__ import annotations
 
 import json
 import logging
+from multiprocessing import context
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable
+from opentelemetry import context
 
 from pydantic import BaseModel, Field
 
@@ -290,11 +292,18 @@ class AIService:
         openai_tool_dicts: List[Dict],
         dedup_cache: Dict,
         trace_callback=None,
+        trace_prefix: str = "Agent:",
     ) -> List:
         """Convert AgentRegistry OpenAI-format dicts into SDK FunctionTool objects.
 
         Thin wrapper: parse args, sanitize null strings, call registry, return JSON.
         Each tool function owns its own data-fetching strategy (RAG vs structured).
+        
+        Args:
+            openai_tool_dicts: List of OpenAI tool schemas
+            dedup_cache: Cache for deduplicating tool calls
+            trace_callback: Callback for trace events
+            trace_prefix: Prefix for trace events (e.g., "Keng Koon:" or "Agent:")
         """
         import json as _json
         from kk_utils.agent_tools import get_registry
@@ -309,7 +318,7 @@ class AIService:
             description = fn_def.get("description", "")
             params_schema = fn_def.get("parameters", {"type": "object", "properties": {}})
 
-            async def on_invoke(ctx, args_json, _name=tool_name, _trace=trace_callback):
+            async def on_invoke(ctx, args_json, _name=tool_name, _trace=trace_callback, _prefix=trace_prefix):
                 try:
                     tool_args = _json.loads(args_json) if args_json else {}
                 except Exception:
@@ -330,9 +339,9 @@ class AIService:
                         ms = result.get("retrieval_time_ms", 0.0)
                         n = result.get("chunks_searched", 0)
                         dist = result.get("avg_distance", 0.0)
-                        _trace(f"agent_me: {_name}: RAG confidence={conf:.3f} (avg_distance={dist:.3f}), {ms:.0f}ms, chunks_searched={n}")
+                        _trace(f"{_prefix} {_name}: RAG confidence={conf:.3f} (avg_distance={dist:.3f}), {ms:.0f}ms, chunks_searched={n}")
                     elif result.get("available") is False:
-                        _trace(f"agent_me: {_name}: no data in profile")
+                        _trace(f"{_prefix} {_name}: no data in profile")
 
                 return _json.dumps(result)
 
@@ -462,12 +471,14 @@ class AIService:
 
         # Build SDK FunctionTool list from OpenAI dicts
         dedup_cache: Dict[str, Any] = {}
-        sdk_tools = self._build_sdk_tools(tools or [], dedup_cache, trace_callback=trace_callback)
+        # Build trace prefix from agent_name (e.g., "Keng Koon:" or "AI Assistant:")
+        trace_prefix = f"{agent_name}:" if agent_name else "Agent:"
+        sdk_tools = self._build_sdk_tools(tools or [], dedup_cache, trace_callback=trace_callback, trace_prefix=trace_prefix)
         if progress_callback is not None:
             sdk_tools.insert(0, self._build_progress_tool(progress_callback, max_plan_steps))
 
         agent = SDKAgent(
-            name="AIServiceAgent",
+            name=agent_name,
             instructions=effective_system,
             model=OpenAIChatCompletionsModel(model=self.model, openai_client=self.client),
             tools=sdk_tools,
@@ -477,7 +488,7 @@ class AIService:
         )
 
         if trace_callback:
-            trace_callback("agent_me: calling LLM")
+            trace_callback(f"{trace_prefix} calling LLM")
 
         try:
             last_text_response = ""
@@ -540,7 +551,7 @@ class AIService:
                                     if v is not None and v != "" and v != []
                                 ) if tool_args else ""
                                 label = f"{tool_name}({args_str})" if args_str else tool_name
-                                trace_callback(f"agent_me: executing {label}")
+                                trace_callback(f"{trace_prefix} executing {label}")
                     elif item.type == "tool_call_output_item":
                         if trace_callback:
                             raw = getattr(item, "raw_item", None)
@@ -550,10 +561,10 @@ class AIService:
                             )
                             if (call_id or "") not in cached_call_ids:
                                 resolved_tool = call_id_to_tool.get(call_id or "", "tool")
-                                trace_callback(f"agent_me: {resolved_tool}: done")
+                                trace_callback(f"{trace_prefix} {resolved_tool}: done")
 
             if trace_callback:
-                trace_callback("agent_me: final response received")
+                trace_callback(f"{trace_prefix} final response received")
 
             self._on_usage(streamed, context, TextResult)
             final = last_text_response or streamed.final_output or ""
@@ -758,7 +769,7 @@ class AIService:
 
             user_messages = [{"role": "user", "content": user_text}]
 
-            with trace("kk_utils_ai"):
+            with trace("AIServiceAgent"):
                 result = await Runner.run(agent, user_messages)
 
             final_output = result.final_output
@@ -783,6 +794,97 @@ class AIService:
         except Exception as e:
             logger.error(f"AI call failed: {e}", exc_info=True)
             return self._mock_response(output_type)
+
+    async def generate_vision_raw(
+        self,
+        system_prompt: str,
+        user_text: str,
+        image_b64: str,
+        image_mime: str,
+    ) -> Dict[str, Any]:
+        """
+        Single-shot vision call via OpenAI Agents SDK.
+
+        All LLM logic lives here — adapters must NOT call the client directly.
+
+        Returns:
+            dict: raw_content, finish_reason, prompt/completion/total_tokens,
+                  elapsed_ms, api_model, base_url
+        """
+        import time
+
+        if not self.client or self.provider == "mock":
+            raise RuntimeError(f"AIService not ready (provider={self.provider})")
+
+        if not AGENTS_SDK_AVAILABLE:
+            raise RuntimeError("OpenAI Agents SDK not available")
+
+        sdk_model = OpenAIChatCompletionsModel(
+            model=self.model,
+            openai_client=self.client,
+        )
+
+        agent = SDKAgent(
+            name="VisionAgent",
+            instructions=system_prompt,
+            model=sdk_model,
+            model_settings=ModelSettings(
+                extra_body={"response_format": {"type": "json_object"}}
+            ) if ModelSettings else None,
+        )
+
+        # Responses API input format — required by the Agents SDK converter
+        # (chatcmpl_converter translates input_text/input_image → Chat Completions text/image_url)
+        user_messages = [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": user_text},
+                    {
+                        "type": "input_image",
+                        "image_url": f"data:{image_mime};base64,{image_b64}",
+                    },
+                ],
+            }
+        ]
+
+        t0 = time.monotonic()
+        with trace("vision_pipeline"):
+            result = await Runner.run(agent, user_messages)
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+
+        raw_content = result.final_output if isinstance(result.final_output, str) else ""
+
+        # Extract usage from last raw response
+        prompt_tokens = completion_tokens = total_tokens = 0
+        finish_reason = "stop"
+        if result.raw_responses:
+            last = result.raw_responses[-1]
+            usage = getattr(last, "usage", None)
+            if usage:
+                prompt_tokens = getattr(usage, "input_tokens", 0) or getattr(usage, "prompt_tokens", 0)
+                completion_tokens = getattr(usage, "output_tokens", 0) or getattr(usage, "completion_tokens", 0)
+                total_tokens = prompt_tokens + completion_tokens
+            choices = getattr(last, "choices", None)
+            if choices:
+                finish_reason = getattr(choices[-1], "finish_reason", "stop") or "stop"
+
+        logger.info(
+            f"  [vision] done | provider={self.provider} model={self.model} | "
+            f"tokens={prompt_tokens}+{completion_tokens}={total_tokens} | {elapsed_ms}ms"
+        )
+
+        return {
+            "raw_content": raw_content,
+            "finish_reason": finish_reason,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "elapsed_ms": elapsed_ms,
+            "api_model": self.model,
+            "base_url": self.base_url or "https://api.openai.com/v1",
+        }
 
     def _on_usage(self, result: Any, context: Optional[CallContext], output_type: type) -> None:
         """

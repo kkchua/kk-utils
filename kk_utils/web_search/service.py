@@ -114,7 +114,8 @@ class WebSearchService:
                 for r in raw_results
             ]
 
-            logger.info(f"Web search: '{query}' → {len(results)} results")
+            # Avoid non-ASCII characters in log message to prevent UnicodeEncodeError
+            logger.info(f"Web search: '%s' -> %d results", query, len(results))
             return SearchResults(results=results, total=len(results), query=query)
 
         except httpx.HTTPStatusError as e:
