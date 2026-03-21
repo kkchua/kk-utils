@@ -124,9 +124,15 @@ class MasterAgent:
         user_role: str = "demo",
         conversation_history: Optional[List[Dict[str, str]]] = None,
         model: str = "openai/gpt-5-nano",
-        debug_mode: bool = False,  # NEW: Debug mode flag
-        skill_tags: Optional[List[str]] = None,  # NEW: Override persona skills
-        skill: Optional[str] = None,  # NEW: Explicit skill selection from UI
+        debug_mode: bool = False,
+        skill_tags: Optional[List[str]] = None,
+        skill: Optional[str] = None,
+        # Pipeline execution context (bypasses LLM when handler is registered)
+        execution_type: Optional[str] = None,   # e.g. "vision_pipeline"
+        skill_adapter: Optional[str] = None,    # e.g. "image_variation"
+        prompt_name: Optional[str] = None,      # e.g. "master_prompt_qwen"
+        attachments: Optional[List[str]] = None,
+        input_values: Optional[Dict[str, Any]] = None,
     ) -> AgentResponse:
         """
         Process a chat message.
@@ -164,8 +170,45 @@ class MasterAgent:
         adapter_type = persona.adapter_type or "agent_me"
         adapter_class = self.adapter_registry.get_adapter(adapter_type)
         adapter: BaseAgentAdapter = adapter_class()
-        
+
         logger.info(f"MasterAgent: persona={persona_name!r} adapter={adapter_type!r}")
+
+        # 2b. Pipeline check — if execution_type maps to a registered handler,
+        #     skip LLM entirely and let the handler run the pipeline directly.
+        if execution_type:
+            handler = self.handler_registry.get_handler(execution_type)
+            if handler:
+                logger.info(
+                    f"MasterAgent: routing to handler '{execution_type}' "
+                    f"(skill={skill!r}, skill_adapter={skill_adapter!r}, prompt={prompt_name!r})"
+                )
+                from .skill_handlers import SkillContext
+                context = SkillContext(
+                    user_id=user_id,
+                    user_role=user_role,
+                    persona_name=persona_name,
+                    persona_collection=persona.collection,
+                    model=model,
+                    attachments=attachments or [],
+                    extra={
+                        "skill_adapter": skill_adapter,
+                        "prompt_name": prompt_name,
+                        "input_values": input_values or {},
+                        "adapter_instance": adapter,  # persona adapter (has generate_vision_raw)
+                    },
+                )
+                skill_result = await handler.handle(skill or "", {}, context)
+                output = skill_result.output or {}
+                return AgentResponse(
+                    response_text=output.get("response_text", skill_result.error or "Pipeline completed.") if isinstance(output, dict) else str(output),
+                    agent_type=adapter_type,
+                    persona_name=persona_name,
+                    collection=persona.collection,
+                    tools_available=0,
+                    success=skill_result.success,
+                    error=skill_result.error,
+                    metadata=skill_result.to_dict(),
+                )
 
         # 3. Load schema config (optional)
         schema_config = adapter.get_tools_config(persona) or {}

@@ -26,7 +26,6 @@ from typing import List, Dict, Any, Optional
 
 from kk_utils.persona_config import PersonaConfig
 from kk_utils.agents.base_agent_adapter import BaseAgentAdapter
-from kk_utils.agents.agent_response import AgentResponse
 
 logger = logging.getLogger(__name__)
 
@@ -84,75 +83,3 @@ class AgentMeAdapter(BaseAgentAdapter):
         """Load tools config from schema."""
         return super().get_tools_config(persona)
 
-    def build_system_prompt(self, persona: "PersonaConfig") -> str:
-        """
-        Build system prompt for AgentMe.
-
-        NOTE: This method is kept for backward compatibility but is NOT used.
-        MasterAgent now controls all system prompt loading via _load_system_prompt().
-        """
-        # This should not be called - MasterAgent handles prompt loading
-        logger.warning("build_system_prompt() called - this should be handled by MasterAgent")
-        return ""
-    
-    async def execute_chat(
-        self,
-        messages: List[Dict[str, str]],
-        tools: List[Dict[str, Any]],
-        model: str,
-        persona: Optional["PersonaConfig"] = None,
-    ) -> AgentResponse:
-        """
-        Execute chat with tools.
-        
-        Args:
-            messages: List of message dicts
-            tools: List of tool schemas
-            model: AI model to use
-            persona: Full persona config object (for trace name, metadata, etc.)
-            
-        Returns:
-            AgentResponse with the AI reply
-        """
-        try:
-            # Execute chat using base class helper
-            # Pass persona for trace name and metadata extraction
-            response_data = await self._execute_chat_with_tools(
-                messages=messages,
-                tools=tools,
-                model=model,
-                persona=persona,
-            )
-            
-            response_text = response_data.get("response", "")
-            
-            # Extract metadata from persona if available
-            metadata = {
-                "model": model,
-                "tool_count": len(tools),
-            }
-            if persona:
-                metadata["persona_name"] = persona.name
-                metadata["persona_display_name"] = persona.display_name
-                metadata["collection"] = persona.collection
-            
-            return AgentResponse(
-                response_text=response_text,
-                agent_type="agent_me",
-                persona_name=persona.name if persona else "agent_me",
-                collection=persona.collection if persona else "agent_me",
-                tools_available=len(tools),
-                metadata=metadata,
-            )
-            
-        except Exception as e:
-            logger.error(f"AgentMeAdapter chat failed: {e}", exc_info=True)
-            return AgentResponse(
-                response_text="I encountered an error. Please try again.",
-                agent_type="agent_me",
-                persona_name=persona.name if persona else "agent_me",
-                collection=persona.collection if persona else "agent_me",
-                tools_available=len(tools),
-                error=f"chat_failed: {str(e)}",
-                success=False,
-            )
