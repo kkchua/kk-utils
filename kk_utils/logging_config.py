@@ -131,7 +131,7 @@ def setup_logging(
     level: Optional[str] = None,
     log_file: Optional[str] = None,
     json_format: bool = False,
-    rotation: str = "midnight",
+    rotation: str = "size",  # Always use size-based rotation (10MB files, 5 backups)
     quiet_loggers: Optional[list] = None,
     verbose_packages: bool = False,
 ) -> None:
@@ -143,7 +143,7 @@ def setup_logging(
                If None, reads from LOG_LEVEL environment variable, defaults to "INFO".
         log_file: Optional log file path
         json_format: Use JSON format (True for production)
-        rotation: Log rotation strategy ("midnight", "size", or None)
+        rotation: Log rotation strategy (always uses "size" for 10MB files, 5 backups)
         quiet_loggers: List of logger names to set to WARNING level.
                        If None (default): uses default quiet loggers list
                        If []: shows all logs including HTTP clients
@@ -182,23 +182,14 @@ def setup_logging(
     root_logger.addHandler(console_handler)
 
     if log_file and log_path:
-        if rotation == "midnight":
-            from logging.handlers import TimedRotatingFileHandler
-            file_handler = TimedRotatingFileHandler(
-                str(log_path),  # ✅ Use resolved log_path, not log_file
-                when="midnight",
-                interval=1,
-                backupCount=30,
-            )
-        elif rotation == "size":
-            from logging.handlers import RotatingFileHandler
-            file_handler = RotatingFileHandler(
-                str(log_path),  # ✅ Use resolved log_path
-                maxBytes=10*1024*1024,
-                backupCount=5,
-            )
-        else:
-            file_handler = logging.FileHandler(str(log_path))  # ✅ Use resolved log_path
+        # Always use size-based rotation for predictable log file sizes
+        # Files rotate when size > 10MB, not just at midnight
+        from logging.handlers import RotatingFileHandler
+        file_handler = RotatingFileHandler(
+            str(log_path),  # ✅ Use resolved log_path
+            maxBytes=10*1024*1024,  # 10MB per file
+            backupCount=5,  # Keep 5 backup files (~50MB total)
+        )
 
         file_handler.setLevel(level)
         if json_format:
