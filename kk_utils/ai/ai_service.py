@@ -830,13 +830,16 @@ class AIService:
             openai_client=self.client,
         )
 
+        # response_format json_object is only supported by OpenAI-compatible endpoints.
+        # Anthropic rejects it (expects json_schema); skip for anthropic provider.
+        use_json_format = self.provider not in ("anthropic",)
         agent = SDKAgent(
             name="VisionAgent",
             instructions=system_prompt,
             model=sdk_model,
             model_settings=ModelSettings(
                 extra_body={"response_format": {"type": "json_object"}}
-            ) if ModelSettings else None,
+            ) if (ModelSettings and use_json_format) else None,
         )
 
         # Responses API input format — required by the Agents SDK converter
