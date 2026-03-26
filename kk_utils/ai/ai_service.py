@@ -161,6 +161,7 @@ class AIService:
             "dashscope": "DASHSCOPE_API_KEY",
             "ollama": "OLLAMA_API_KEY",
             "anthropic": "ANTHROPIC_API_KEY",
+            "deepseek": "DEEPSEEK_API_KEY"
         }
 
         api_key_env = api_key_env_map.get(self.provider)
@@ -185,6 +186,11 @@ class AIService:
         if not self.base_url:
             if self.provider in ("qwen", "dashscope"):
                 self.base_url = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+                self.base_url = os.environ.get("DASHSCOPE_API_URL", "")
+            if self.provider in ("anthropic"):
+                self.base_url = os.environ.get("ANTHROPIC_API_URL", "")
+            if self.provider in ("deepseek"):
+                self.base_url = os.environ.get("DEEPSEEK_API_URL", "")
             elif self.provider == "ollama":
                 self.base_url = "http://localhost:11434/v1"
 
