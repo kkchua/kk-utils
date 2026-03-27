@@ -128,11 +128,12 @@ class MasterAgent:
         skill_tags: Optional[List[str]] = None,
         skill: Optional[str] = None,
         # Pipeline execution context (bypasses LLM when handler is registered)
-        execution_type: Optional[str] = None,   # e.g. "vision_pipeline"
-        skill_adapter: Optional[str] = None,    # e.g. "image_variation"
-        prompt_name: Optional[str] = None,      # e.g. "master_prompt_qwen"
+        execution_type: Optional[str] = None,        # e.g. "vision_pipeline"
+        skill_adapter: Optional[str] = None,         # e.g. "image_variation"
+        prompt_name: Optional[str] = None,           # e.g. "master_prompt_qwen"
         attachments: Optional[List[str]] = None,
         input_values: Optional[Dict[str, Any]] = None,
+        system_prompt_override: Optional[str] = None,  # pre-resolved prompt text (LLM path only)
     ) -> AgentResponse:
         """
         Process a chat message.
@@ -233,26 +234,22 @@ class MasterAgent:
             )
             logger.info(f"MasterAgent: Using persona defaults skills={skills}, skill_tags={final_skill_tags}")
 
-        # 5. If skill != "None", add the skill's tags to final_skill_tags
+        # 5. If skill != "None", ensure the skill name is included as a tag in final_skill_tags
         if skill and skill.lower() != "none":
-            from ..agent_tools import get_registry as get_tools_registry
-            tools_registry = get_tools_registry()
-
-            # Get skill info to extract its tags
-            skill_info = tools_registry.get_skill(skill)
-            if skill_info:
-                skill_module_tags = skill_info.get("tags", [])
-                # Combine persona tags + selected skill tags (use set to avoid duplicates)
-                final_skill_tags = list(set(final_skill_tags + skill_module_tags))
-                logger.info(f"MasterAgent: Added tags from skill '{skill}': {skill_module_tags}")
-            else:
-                logger.warning(f"MasterAgent: Skill '{skill}' not found in registry")
+            skill_tag = skill.lower()
+            if skill_tag not in final_skill_tags:
+                final_skill_tags = list(set(final_skill_tags + [skill_tag]))
+            logger.info(f"MasterAgent: Added skill tag '{skill_tag}' to final_skill_tags={final_skill_tags}")
 
         # 6. Load tools from registry
         tools = self._load_tools(final_skill_tags)
 
         # 7. Build system prompt (MasterAgent controls loading, NOT adapter)
-        system_prompt = self._load_system_prompt(adapter, persona)
+        if system_prompt_override:
+            system_prompt = system_prompt_override
+            logger.info(f"MasterAgent: Using system_prompt_override ({len(system_prompt_override)} chars)")
+        else:
+            system_prompt = self._load_system_prompt(adapter, persona)
         
         # GOVERNOR: Append global system prompt suffix (tool limits, rules, etc.)
         # This is done in MasterAgent so it applies uniformly to ALL adapters
@@ -332,6 +329,8 @@ class MasterAgent:
                     "collection": persona.collection,
                     "adapter_type": persona.adapter_type,
                     "prompt_template": persona.adapter_prompt_template,
+                    "prompt_name": prompt_name,
+                    "system_prompt_overridden": system_prompt_override is not None,
                     "system_prompt": system_prompt,
                     "messages": messages,
                     "tools": serializable_tools,  # Filtered tools without function refs
