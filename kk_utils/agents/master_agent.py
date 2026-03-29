@@ -134,6 +134,7 @@ class MasterAgent:
         attachments: Optional[List[str]] = None,
         input_values: Optional[Dict[str, Any]] = None,
         system_prompt_override: Optional[str] = None,  # pre-resolved prompt text (LLM path only)
+        db_session=None,  # Optional DB session for loading prompts from llm_prompts table
     ) -> AgentResponse:
         """
         Process a chat message.
@@ -151,6 +152,7 @@ class MasterAgent:
             debug_mode: If True, show simulation without calling LLM
             skill_tags: Override persona's default skill tags
             skill: Explicit skill selection from UI (e.g., "deep_research", "None")
+            db_session: Optional SQLAlchemy session for loading prompts from DB
 
         Returns:
             AgentResponse with the AI reply
@@ -249,7 +251,7 @@ class MasterAgent:
             system_prompt = system_prompt_override
             logger.info(f"MasterAgent: Using system_prompt_override ({len(system_prompt_override)} chars)")
         else:
-            system_prompt = self._load_system_prompt(adapter, persona)
+            system_prompt = self._load_system_prompt(adapter, persona, db_session)
         
         # GOVERNOR: Append global system prompt suffix (tool limits, rules, etc.)
         # This is done in MasterAgent so it applies uniformly to ALL adapters
@@ -385,17 +387,20 @@ class MasterAgent:
         self,
         adapter: BaseAgentAdapter,
         persona: PersonaConfig,
+        db_session=None,  # Optional DB session for loading from llm_prompts
     ) -> str:
         """
         Load system prompt - centralized logic in MasterAgent.
 
         Priority:
-        1. Centralized master prompt: prompts/master/{adapter_prompt_template}.txt
-        2. Adapter default: adapters/{adapter_type}/prompts/default.txt
+        1. Database: llm_prompts table (namespace="agent", adapter="", name={template_name})
+        2. Centralized master prompt: prompts/master/{adapter_prompt_template}.txt
+        3. Adapter default: adapters/{adapter_type}/prompts/default.txt
 
         Args:
             adapter: Adapter instance
             persona: Persona configuration
+            db_session: Optional SQLAlchemy session for DB loading
 
         Returns:
             System prompt string
@@ -403,23 +408,41 @@ class MasterAgent:
         # Get template name from persona, fallback to persona name
         template_name = persona.adapter_prompt_template or persona.name
 
-        # Try centralized master prompts first
+        logger.info(f"MasterAgent._load_system_prompt: persona={persona.name!r}, template_name={template_name!r}")
+
+        # Try database first (universal LLM prompts)
+        if db_session:
+            try:
+                from app.services.prompt_service import get_prompt_service
+                llm_prompt = get_prompt_service().get(
+                    db_session, namespace="agent", adapter="", name=template_name
+                )
+                if llm_prompt and llm_prompt.prompt_text:
+                    system_prompt = llm_prompt.prompt_text
+                    logger.info(f"MasterAgent: ✅ Loaded prompt from DB '{template_name}' (id={llm_prompt.id}, len={len(system_prompt)} chars)")
+                    logger.debug(f"MasterAgent: DB prompt preview: {system_prompt[:200]!r}...")
+                    return system_prompt
+                else:
+                    logger.warning(f"MasterAgent: DB prompt '{template_name}' found but empty prompt_text")
+            except Exception as e:
+                logger.warning(f"MasterAgent: DB prompt loading failed: {e}")
+
+        # Try centralized master prompts second
         try:
             from kk_utils.agents.prompts import load_master_prompt
             system_prompt = load_master_prompt(template_name)
-            logger.info(f"MasterAgent: Loaded master prompt '{template_name}'")
+            logger.info(f"MasterAgent: ✅ Loaded master prompt '{template_name}' (file fallback, len={len(system_prompt)} chars)")
             return system_prompt
         except FileNotFoundError:
-            logger.warning(
-                f"Master prompt template '{template_name}' not found, "
-                f"falling back to adapter default"
-            )
+            logger.warning(f"MasterAgent: Master prompt template '{template_name}' not found (file)")
 
         # Fallback to adapter's default prompt
         try:
-            return adapter.load_prompt_template("default")
+            system_prompt = adapter.load_prompt_template("default")
+            logger.info(f"MasterAgent: ✅ Loaded adapter default prompt (len={len(system_prompt)} chars)")
+            return system_prompt
         except FileNotFoundError:
-            logger.warning(f"Adapter default prompt not found, using minimal fallback")
+            logger.warning(f"MasterAgent: Adapter default prompt not found, using minimal fallback")
             return self._get_fallback_prompt()
 
     def _get_fallback_prompt(self) -> str:
