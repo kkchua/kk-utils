@@ -34,7 +34,7 @@ from ..persona_config import PersonaConfig, load_persona
 
 logger = logging.getLogger(__name__)
 
-
+### Trigger
 class MasterAgent:
     """
     Master Agent - backend-agnostic orchestrator.
