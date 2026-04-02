@@ -268,6 +268,11 @@ class MasterAgent:
         except Exception as e:
             logger.warning(f"MasterAgent: Failed to append Governor suffix: {e}")
 
+        # Apply input_values substitution to system prompt (replaces {key} placeholders)
+        if input_values:
+            system_prompt = self._apply_input_values(system_prompt, input_values)
+            logger.info(f"MasterAgent: Applied input_values substitution ({len(input_values)} keys)")
+
         # 7. Build messages
         messages = self._build_messages(system_prompt, conversation_history, message)
 
@@ -457,7 +462,17 @@ class MasterAgent:
 You have access to tools that can help you answer questions.
 When appropriate, use the available tools to gather information before responding.
 """
-    
+
+    def _apply_input_values(
+        self, prompt_text: str, input_values: Optional[Dict[str, Any]]
+    ) -> str:
+        """Substitute {key} placeholders in prompt_text with values from input_values."""
+        if not input_values:
+            return prompt_text
+        for key, value in input_values.items():
+            prompt_text = prompt_text.replace(f"{{{key}}}", str(value))
+        return prompt_text
+
     def _build_messages(
         self,
         system_prompt: str,
