@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//home/kengkoon/projects/agent-runner-v2/**)",
+      "Bash(.venv/bin/python *)"
+    ]
+  },
+  "$version": 3
+}

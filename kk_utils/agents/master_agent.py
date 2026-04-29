@@ -95,6 +95,17 @@ class MasterAgent:
             logger.info("Registered built-in agent adapters: agent_me, ai_assistant")
         except ImportError as e:
             logger.warning(f"Could not register built-in adapters: {e}")
+
+        # Register coder adapters
+        try:
+            from .coder import CoderRegistry, DescImageCoderAdapter, CsvGeneratorCoderAdapter
+
+            coder_registry = CoderRegistry.instance()
+            coder_registry.register("desc_image", DescImageCoderAdapter, override=True)
+            coder_registry.register("csv_generator", CsvGeneratorCoderAdapter, override=True)
+            logger.info("Registered built-in coder adapters: desc_image, csv_generator")
+        except ImportError as e:
+            logger.warning(f"Could not register built-in coder adapters: {e}")
     
     def _register_builtin_handlers(self) -> None:
         """Register built-in skill handlers."""
@@ -168,7 +179,26 @@ class MasterAgent:
         persona = load_persona(persona_name, config_path=self.personas_config_path)
         if persona is None:
             raise ValueError(f"Persona '{persona_name}' not found")
-        
+
+        # 1b. Coder routing — if adapter_type starts with "coder_", route to coder adapter
+        adapter_type = persona.adapter_type or "agent_me"
+        if adapter_type.startswith("coder_"):
+            coder_adapter_name = adapter_type[len("coder_"):]  # e.g., "desc_image"
+            logger.info(f"MasterAgent: routing to coder adapter '{coder_adapter_name}'")
+            return await self._execute_coder(
+                coder_adapter_name=coder_adapter_name,
+                persona=persona,
+                message=message,
+                context={
+                    "user_id": user_id,
+                    "user_role": user_role,
+                    "persona_collection": persona.collection,
+                    "db_session": db_session,
+                    "input_values": input_values,
+                    "cwd": Path.cwd(),
+                },
+            )
+
         # 2. Get adapter
         adapter_type = persona.adapter_type or "agent_me"
         adapter_class = self.adapter_registry.get_adapter(adapter_type)
@@ -500,7 +530,85 @@ When appropriate, use the available tools to gather information before respondin
         messages.append({"role": "user", "content": message})
         
         return messages
-    
+
+    async def _execute_coder(
+        self,
+        *,
+        coder_adapter_name: str,
+        persona: PersonaConfig,
+        message: str,
+        context: Dict[str, Any],
+    ) -> AgentResponse:
+        """
+        Execute a coder adapter and return an AgentResponse.
+
+        This is the routing path for personas with adapter_type starting with "coder_".
+        E.g., adapter_type="coder_desc_image" → DescImageCoderAdapter.
+
+        Args:
+            coder_adapter_name: Coder adapter name (e.g., "desc_image")
+            persona: Loaded persona config
+            message: User message
+            context: Execution context dict
+
+        Returns:
+            AgentResponse (wrapped CoderResponse)
+        """
+        try:
+            from .coder import CoderRegistry
+            registry = CoderRegistry.instance()
+            adapter_class = registry.get_adapter(coder_adapter_name)
+            coder_adapter = adapter_class()
+        except KeyError:
+            available = []
+            try:
+                from .coder import list_adapters
+                available = list_adapters()
+            except ImportError:
+                pass
+            raise KeyError(
+                f"Coder adapter '{coder_adapter_name}' not found. "
+                f"Available: {available}"
+            )
+
+        logger.info(
+            f"MasterAgent._execute_coder: adapter={coder_adapter_name!r} "
+            f"persona={persona.name!r}"
+        )
+
+        # Build context for coder
+        coder_context = {
+            **context,
+            "persona_name": persona.name,
+            "persona_collection": persona.collection,
+            "persona_display_name": persona.display_name,
+            "adapter_type": persona.adapter_type,
+        }
+
+        # Execute coder
+        coder_response = await coder_adapter.execute_coder(
+            prompt_text=message,
+            context=coder_context,
+        )
+
+        # Wrap CoderResponse as AgentResponse for consistency
+        return AgentResponse(
+            response_text=coder_response.response_text,
+            agent_type=coder_response.agent_type,
+            persona_name=coder_response.persona_name,
+            collection=coder_response.collection,
+            tools_available=0,
+            metadata={
+                **coder_response.metadata,
+                "coder_return_code": coder_response.return_code,
+                "coder_usage": coder_response.usage,
+                "coder_artifacts": coder_response.artifacts,
+                "coder_reject_code": coder_response.reject_code,
+            },
+            error=coder_response.error,
+            success=coder_response.success,
+        )
+
     def list_available_adapters(self) -> List[str]:
         """
         List all registered adapter names.
