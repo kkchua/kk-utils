@@ -1,0 +1,93 @@
+{
+  "coder_aliases": {
+    "desc_image": {
+      "coder": "qwen",
+      "model": "qwen-coder-plus-latest",
+      "auth_type": "dashscope",
+      "openai_api_key_env": "DASHSCOPE_API_KEY",
+      "openai_base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+      "cli_params": {
+        "cmd": ["qwen"],
+        "flags": ["--output-format", "json", "--approval-mode", "yolo", "--session-id", "{{session_id}}"],
+        "prompt_flag": "-p",
+        "input_flag": null,
+        "model_flag": "-m",
+        "schema_flag": null,
+        "schema_inline": true,
+        "api_key_flag": "--openai-api-key",
+        "base_url_flag": "--openai-base-url"
+      }
+    },
+    "csv_generator": {
+      "coder": "qwen",
+      "model": "qwen-coder-plus-latest",
+      "auth_type": "dashscope",
+      "openai_api_key_env": "DASHSCOPE_API_KEY",
+      "openai_base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+      "cli_params": {
+        "cmd": ["qwen"],
+        "flags": ["--output-format", "json", "--approval-mode", "yolo", "--session-id", "{{session_id}}"],
+        "prompt_flag": "-p",
+        "input_flag": null,
+        "model_flag": "-m",
+        "schema_flag": null,
+        "schema_inline": true,
+        "api_key_flag": "--openai-api-key",
+        "base_url_flag": "--openai-base-url"
+      }
+    },
+    "qwen-default": {
+      "coder": "qwen",
+      "model": "qwen-coder-plus-latest",
+      "auth_type": "dashscope",
+      "openai_api_key_env": "DASHSCOPE_API_KEY",
+      "openai_base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+      "cli_params": {
+        "cmd": ["qwen"],
+        "flags": ["--output-format", "json", "--approval-mode", "yolo"],
+        "prompt_flag": "-p",
+        "input_flag": null,
+        "model_flag": "-m",
+        "schema_flag": null,
+        "schema_inline": true,
+        "api_key_flag": "--openai-api-key",
+        "base_url_flag": "--openai-base-url"
+      }
+    },
+    "claude-sonnet": {
+      "coder": "claude",
+      "model": "claude-sonnet-4-20250514",
+      "auth_type": "anthropic",
+      "openai_api_key_env": "ANTHROPIC_API_KEY",
+      "cli_params": {
+        "cmd": ["claude"],
+        "flags": ["--permission-mode", "bypassPermissions", "--print", "--output-format", "json"],
+        "prompt_flag": null,
+        "input_flag": "stdin",
+        "model_flag": null,
+        "schema_flag": "--json-schema",
+        "schema_inline": true,
+        "api_key_flag": null,
+        "base_url_flag": null
+      }
+    },
+    "deepseek-chat": {
+      "coder": "qwen",
+      "model": "deepseek-chat",
+      "auth_type": "openai",
+      "openai_api_key_env": "DEEPSEEK_API_KEY",
+      "openai_base_url": "https://api.deepseek.com/v1",
+      "cli_params": {
+        "cmd": ["qwen"],
+        "flags": ["--output-format", "json", "--approval-mode", "yolo"],
+        "prompt_flag": "-p",
+        "input_flag": null,
+        "model_flag": "-m",
+        "schema_flag": null,
+        "schema_inline": true,
+        "api_key_flag": "--openai-api-key",
+        "base_url_flag": "--openai-base-url"
+      }
+    }
+  }
+}
