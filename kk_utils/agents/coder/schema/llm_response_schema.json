@@ -1,0 +1,56 @@
+{
+  "type": "object",
+  "required": [
+    "status",
+    "remark",
+    "artifacts",
+    "reject_type",
+    "reject_code",
+    "retry_after_seconds"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "APPROVED",
+        "REJECTED"
+      ]
+    },
+    "remark": {
+      "type": "string",
+      "description": "Human-readable remark about the result"
+    },
+    "artifacts": {
+      "type": "object",
+      "description": "Output artifact paths (key → relative path)",
+      "additionalProperties": true,
+      "properties": {
+        "OUTPUT_FILE": {
+          "anyOf": [{"type": "string"}, {"type": "null"}]
+        },
+        "OUTPUT_FOLDER": {
+          "anyOf": [{"type": "string"}, {"type": "null"}]
+        }
+      }
+    },
+    "reject_type": {
+      "anyOf": [
+        {"type": "string", "enum": ["AUTO_RETRYABLE", "HUMAN_RETRY_REQUIRED", "FATAL"]},
+        {"type": "null"}
+      ],
+      "description": "Classification of rejection reason"
+    },
+    "reject_code": {
+      "anyOf": [{"type": "string"}, {"type": "null"}],
+      "description": "Specific rejection code from the coder"
+    },
+    "retry_after_seconds": {
+      "anyOf": [
+        {"type": "integer", "minimum": 0},
+        {"type": "null"}
+      ],
+      "description": "Suggested wait time before retry"
+    }
+  },
+  "additionalProperties": false
+}
