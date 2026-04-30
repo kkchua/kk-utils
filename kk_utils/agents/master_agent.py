@@ -264,11 +264,30 @@ class MasterAgent:
                     image_mime=img["mime"],
                     model=model,
                 )
-                response_text = (
-                    vision_result.get("response")
-                    or vision_result.get("response_text")
-                    or str(vision_result)
-                )
+                # generate_vision_raw returns {raw_content, finish_reason, ...}
+                # raw_content may be a JSON string like {"description": "..."} or plain text
+                import json as _json
+                raw = vision_result.get("raw_content", "")
+                response_text = vision_result.get("response") or vision_result.get("response_text")
+                if not response_text and raw:
+                    try:
+                        parsed = _json.loads(raw)
+                        if isinstance(parsed, dict):
+                            # Extract first string value from known keys, then any string value
+                            for key in ("description", "text", "response", "content", "result"):
+                                if isinstance(parsed.get(key), str):
+                                    response_text = parsed[key]
+                                    break
+                            if not response_text:
+                                response_text = next(
+                                    (v for v in parsed.values() if isinstance(v, str)), raw
+                                )
+                        else:
+                            response_text = raw
+                    except (_json.JSONDecodeError, ValueError):
+                        response_text = raw
+                if not response_text:
+                    response_text = str(vision_result)
             except Exception as e:
                 logger.error(f"MasterAgent: vision call failed: {e}", exc_info=True)
                 response_text = "I encountered an error processing the image. Please try again."
