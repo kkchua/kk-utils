@@ -97,15 +97,15 @@ class MasterAgent:
             logger.warning(f"Could not register built-in adapters: {e}")
 
         # Register coder adapters
-        # try:
-        #     from .coder import CoderRegistry, DescImageCoderAdapter, CsvGeneratorCoderAdapter
+        try:
+            from .coder import CoderRegistry, DescImageCoderAdapter, CsvGeneratorCoderAdapter
 
-        #     coder_registry = CoderRegistry.instance()
-        #     coder_registry.register("desc_image", DescImageCoderAdapter, override=True)
-        #     coder_registry.register("csv_generator", CsvGeneratorCoderAdapter, override=True)
-        #     logger.info("Registered built-in coder adapters: desc_image, csv_generator")
-        # except ImportError as e:
-        #     logger.warning(f"Could not register built-in coder adapters: {e}")
+            coder_registry = CoderRegistry.instance()
+            coder_registry.register("desc_image", DescImageCoderAdapter, override=True)
+            coder_registry.register("csv_generator", CsvGeneratorCoderAdapter, override=True)
+            logger.info("Registered built-in coder adapters: desc_image, csv_generator")
+        except ImportError as e:
+            logger.warning(f"Could not register built-in coder adapters: {e}")
     
     def _register_builtin_handlers(self) -> None:
         """Register built-in skill handlers."""
