@@ -143,6 +143,7 @@ class MasterAgent:
         skill_adapter: Optional[str] = None,         # e.g. "image_variation"
         prompt_name: Optional[str] = None,           # e.g. "master_prompt_qwen"
         attachments: Optional[List[str]] = None,
+        image_data: Optional[List[Dict[str, str]]] = None,  # pre-resolved [{b64, mime, filename}]
         input_values: Optional[Dict[str, Any]] = None,
         system_prompt_override: Optional[str] = None,  # pre-resolved prompt text (LLM path only)
         db_session=None,  # Optional DB session for loading prompts from llm_prompts table
@@ -242,6 +243,42 @@ class MasterAgent:
                     error=skill_result.error,
                     metadata=skill_result.to_dict(),
                 )
+
+        # 2c. Vision path — when pre-resolved image data is provided, use generate_vision_raw
+        #     instead of the plain-text chat path. Reuses the same infrastructure as
+        #     the vision_pipeline handler (no code duplication).
+        if image_data and not execution_type:
+            logger.info(f"MasterAgent: vision path — {len(image_data)} image(s)")
+            if system_prompt_override:
+                system_prompt = system_prompt_override
+            else:
+                system_prompt = self._load_system_prompt(adapter, persona, db_session)
+            if input_values:
+                system_prompt = self._apply_input_values(system_prompt, input_values)
+            img = image_data[0]  # use first image
+            try:
+                vision_result = await adapter.generate_vision_raw(
+                    system_prompt=system_prompt,
+                    user_text=message,
+                    image_b64=img["b64"],
+                    image_mime=img["mime"],
+                    model=model,
+                )
+                response_text = (
+                    vision_result.get("response")
+                    or vision_result.get("response_text")
+                    or str(vision_result)
+                )
+            except Exception as e:
+                logger.error(f"MasterAgent: vision call failed: {e}", exc_info=True)
+                response_text = "I encountered an error processing the image. Please try again."
+            return AgentResponse(
+                response_text=response_text,
+                agent_type=adapter_type,
+                persona_name=persona_name,
+                collection=persona.collection,
+                tools_available=0,
+            )
 
         # 3. Load schema config (optional)
         schema_config = adapter.get_tools_config(persona) or {}
