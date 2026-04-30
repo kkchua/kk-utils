@@ -43,7 +43,7 @@ from .agent_registry import AgentRegistry
 from .master_agent import MasterAgent
 
 # Coder module (direct CLI invocation)
-from . import coder
+#from . import coder
 
 __all__ = [
     # Agent API
@@ -53,5 +53,5 @@ __all__ = [
     "MasterAgent",
 
     # Coder module (access via kk_utils.agents.coder)
-    "coder",
+    #"coder",
 ]
