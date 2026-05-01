@@ -573,6 +573,9 @@ class AIService:
                 trace_callback(f"{trace_prefix} final response received")
 
             self._on_usage(streamed, context, TextResult)
+            if streamed.raw_responses:
+                actual_model = getattr(streamed.raw_responses[-1], "model", "unknown")
+                logger.info(f"chat_with_tools: API responded with model='{actual_model}'")
             final = last_text_response or streamed.final_output or ""
             # Guard: discard if response looks like a leaked plan-steps JSON object
             # (report_progress args leaked as final_output when LLM produces no text)
