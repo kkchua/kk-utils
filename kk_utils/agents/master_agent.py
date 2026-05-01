@@ -181,24 +181,24 @@ class MasterAgent:
         if persona is None:
             raise ValueError(f"Persona '{persona_name}' not found")
 
-        # 1b. Coder routing — if adapter_type starts with "coder_", route to coder adapter
-        adapter_type = persona.adapter_type or "agent_me"
-        if adapter_type.startswith("coder_"):
-            coder_adapter_name = adapter_type[len("coder_"):]  # e.g., "desc_image"
-            logger.info(f"MasterAgent: routing to coder adapter '{coder_adapter_name}'")
-            return await self._execute_coder(
-                coder_adapter_name=coder_adapter_name,
-                persona=persona,
-                message=message,
-                context={
-                    "user_id": user_id,
-                    "user_role": user_role,
-                    "persona_collection": persona.collection,
-                    "db_session": db_session,
-                    "input_values": input_values,
-                    "cwd": Path.cwd(),
-                },
-            )
+        # # 1b. Coder routing — if adapter_type starts with "coder_", route to coder adapter
+        # adapter_type = persona.adapter_type or "agent_me"
+        # if adapter_type.startswith("coder_"):
+        #     coder_adapter_name = adapter_type[len("coder_"):]  # e.g., "desc_image"
+        #     logger.info(f"MasterAgent: routing to coder adapter '{coder_adapter_name}'")
+        #     return await self._execute_coder(
+        #         coder_adapter_name=coder_adapter_name,
+        #         persona=persona,
+        #         message=message,
+        #         context={
+        #             "user_id": user_id,
+        #             "user_role": user_role,
+        #             "persona_collection": persona.collection,
+        #             "db_session": db_session,
+        #             "input_values": input_values,
+        #             "cwd": Path.cwd(),
+        #         },
+        #     )
 
         # 2. Get adapter
         adapter_type = persona.adapter_type or "agent_me"
@@ -247,15 +247,16 @@ class MasterAgent:
         # 2c. Vision path — when pre-resolved image data is provided, use generate_vision_raw
         #     instead of the plain-text chat path. Reuses the same infrastructure as
         #     the vision_pipeline handler (no code duplication).
-        if image_data and not execution_type:
-            logger.info(f"MasterAgent: vision path — {len(image_data)} image(s)")
+        valid_images = [img for img in (image_data or []) if img.get("b64")]
+        if valid_images and not execution_type:
+            logger.info(f"MasterAgent: vision path — {len(valid_images)} image(s)")
             if system_prompt_override:
                 system_prompt = system_prompt_override
             else:
                 system_prompt = self._load_system_prompt(adapter, persona, db_session)
             if input_values:
                 system_prompt = self._apply_input_values(system_prompt, input_values)
-            img = image_data[0]  # use first image
+            img = valid_images[0]  # use first valid image
             try:
                 vision_result = await adapter.generate_vision_raw(
                     system_prompt=system_prompt,
