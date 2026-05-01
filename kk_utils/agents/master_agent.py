@@ -341,19 +341,20 @@ class MasterAgent:
             system_prompt = self._load_system_prompt(adapter, persona, db_session)
         
         # GOVERNOR: Append global system prompt suffix (tool limits, rules, etc.)
-        # This is done in MasterAgent so it applies uniformly to ALL adapters
-        try:
-            from app.core.governor import PersonalAssistantGovernor
-            governor = PersonalAssistantGovernor.instance()
-            governor_suffix = governor.get_global_system_prompt_suffix()
-            
-            if governor_suffix and governor_suffix.strip():
-                system_prompt = system_prompt.rstrip() + "\n\n" + governor_suffix.rstrip()
-                logger.info(f"MasterAgent: Appended Governor suffix ({len(governor_suffix)} chars)")
-        except ImportError:
-            logger.debug("MasterAgent: Governor not available - skipping system prompt suffix")
-        except Exception as e:
-            logger.warning(f"MasterAgent: Failed to append Governor suffix: {e}")
+        # Skipped for admin users so they can verify the actual underlying AI model.
+        if user_role != "admin":
+            try:
+                from app.core.governor import PersonalAssistantGovernor
+                governor = PersonalAssistantGovernor.instance()
+                governor_suffix = governor.get_global_system_prompt_suffix()
+
+                if governor_suffix and governor_suffix.strip():
+                    system_prompt = system_prompt.rstrip() + "\n\n" + governor_suffix.rstrip()
+                    logger.info(f"MasterAgent: Appended Governor suffix ({len(governor_suffix)} chars)")
+            except ImportError:
+                logger.debug("MasterAgent: Governor not available - skipping system prompt suffix")
+            except Exception as e:
+                logger.warning(f"MasterAgent: Failed to append Governor suffix: {e}")
 
         # Apply input_values substitution to system prompt (replaces {key} placeholders)
         if input_values:
