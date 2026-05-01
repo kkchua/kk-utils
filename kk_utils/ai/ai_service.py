@@ -185,7 +185,7 @@ class AIService:
         self.base_url = api_base_url
         if not self.base_url:
             if self.provider in ("qwen", "dashscope"):
-                self.base_url = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+                self.base_url = "https://coding-intl.dashscope.aliyuncs.com/api/v1"
                 self.base_url = os.environ.get("DASHSCOPE_API_URL", "")
             if self.provider in ("anthropic"):
                 self.base_url = os.environ.get("ANTHROPIC_API_URL", "")
@@ -199,7 +199,7 @@ class AIService:
             client_kwargs["base_url"] = self.base_url
 
         self.client = AsyncOpenAI(**client_kwargs)
-        logger.info(f"AIService initialized: {api_model} (provider={self.provider})")
+        logger.info(f"AIService initialized: {api_model} (provider={self.provider}) base_url={self.base_url or '(default)'}")
 
         self._prompts = self._load_prompts()
 
