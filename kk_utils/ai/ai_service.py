@@ -185,15 +185,14 @@ class AIService:
         self.base_url = api_base_url
         if not self.base_url:
             if self.provider in ("qwen", "dashscope"):
-                self.base_url = "https://coding-intl.dashscope.aliyuncs.com/api/v1"
-                self.base_url = os.environ.get("DASHSCOPE_API_URL", "")
+                self.base_url = os.environ.get("DASHSCOPE_API_URL", "https://coding-intl.dashscope.aliyuncs.com/v1")
             if self.provider in ("anthropic"):
-                self.base_url = os.environ.get("ANTHROPIC_API_URL", "")
+                self.base_url = os.environ.get("ANTHROPIC_API_URL", "https://api.anthropic.com/v1")
             if self.provider in ("deepseek"):
-                self.base_url = os.environ.get("DEEPSEEK_API_URL", "")
+                self.base_url = os.environ.get("DEEPSEEK_API_URL", "https://api.deepseek.com")
             elif self.provider == "ollama":
-                self.base_url = "http://localhost:11434/v1"
-
+                self.base_url = os.environ.get("OLLAMA_API_URL", "http://localhost:11434/v1")
+            
         client_kwargs: Dict[str, Any] = {"api_key": self.api_key}
         if self.base_url:
             client_kwargs["base_url"] = self.base_url
