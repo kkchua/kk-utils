@@ -897,6 +897,81 @@ class AIService:
             "base_url": self.base_url or "https://api.openai.com/v1",
         }
 
+    async def generate_json_raw(
+        self,
+        system_prompt: str,
+        user_text: str,
+    ) -> Dict[str, Any]:
+        """
+        Single-shot text call with response_format={"type": "json_object"}.
+
+        Broadly compatible — works with providers that support json_object mode
+        but NOT full JSON-schema structured output (e.g. DeepSeek, some Qwen endpoints).
+
+        The prompt must mention "json" and describe the expected structure.
+        Returns the same dict shape as generate_vision_raw (raw_content, tokens, etc.).
+        """
+        import time
+
+        if not self.client or self.provider == "mock":
+            raise RuntimeError(f"AIService not ready (provider={self.provider})")
+
+        if not AGENTS_SDK_AVAILABLE:
+            raise RuntimeError("OpenAI Agents SDK not available")
+
+        sdk_model = OpenAIChatCompletionsModel(
+            model=self.model,
+            openai_client=self.client,
+        )
+
+        use_json_format = self.provider not in ("anthropic",)
+        agent = SDKAgent(
+            name="JsonGenerationAgent",
+            instructions=system_prompt,
+            model=sdk_model,
+            model_settings=ModelSettings(
+                extra_body={"response_format": {"type": "json_object"}}
+            ) if (ModelSettings and use_json_format) else None,
+        )
+
+        user_messages = [{"role": "user", "content": user_text}]
+
+        t0 = time.monotonic()
+        with trace("json_generation"):
+            result = await Runner.run(agent, user_messages)
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+
+        raw_content = result.final_output if isinstance(result.final_output, str) else ""
+
+        prompt_tokens = completion_tokens = total_tokens = 0
+        finish_reason = "stop"
+        if result.raw_responses:
+            last = result.raw_responses[-1]
+            usage = getattr(last, "usage", None)
+            if usage:
+                prompt_tokens = getattr(usage, "input_tokens", 0) or getattr(usage, "prompt_tokens", 0)
+                completion_tokens = getattr(usage, "output_tokens", 0) or getattr(usage, "completion_tokens", 0)
+                total_tokens = prompt_tokens + completion_tokens
+            choices = getattr(last, "choices", None)
+            if choices:
+                finish_reason = getattr(choices[-1], "finish_reason", "stop") or "stop"
+
+        logger.info(
+            f"  [json_gen] done | provider={self.provider} model={self.model} | "
+            f"tokens={prompt_tokens}+{completion_tokens}={total_tokens} | {elapsed_ms}ms"
+        )
+
+        return {
+            "raw_content": raw_content,
+            "finish_reason": finish_reason,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "elapsed_ms": elapsed_ms,
+            "api_model": self.model,
+            "base_url": self.base_url or "https://api.openai.com/v1",
+        }
+
     def _on_usage(self, result: Any, context: Optional[CallContext], output_type: type) -> None:
         """
         Hook for usage tracking. Override or replace in subclasses.
