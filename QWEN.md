@@ -199,13 +199,14 @@ The `kk_utils.agents` module implements a **Master Agent orchestrator** with plu
 ```
 User message → MasterAgent.chat()
   ↓
-1. Load persona from personas.yaml
+1. Load persona metadata from PostgreSQL personas (fallback: personas.yaml)
 2. Select adapter by persona.adapter_type (e.g., "agent_me", "ai_assistant")
-3. Load tools from AgentRegistry by skill_tags
-4. Build system prompt (DB → master prompts → adapter default)
-5. [Pipeline check] If execution_type matches a handler, skip LLM → route to handler
-6. Execute chat via adapter.execute_chat() using AIService
-7. Post-process response → return AgentResponse
+3. Derive tool tags from the persona's assigned skills
+4. Load tools from AgentRegistry by derived skill_tags
+5. Build system prompt (DB llm_prompts → master prompt file → adapter default → generic fallback)
+6. [Pipeline check] If execution_type matches a handler, skip LLM → route to handler
+7. Execute chat via adapter.execute_chat() using AIService
+8. Post-process response → return AgentResponse
 ```
 
 ### Built-in Adapters
@@ -240,6 +241,22 @@ response = await agent.chat(
 2. **Master prompts** — `prompts/master/{template_name}.txt`
 3. **Adapter default** — `adapters/{adapter_type}/prompts/default.txt`
 4. **Fallback** — Minimal generic system prompt
+
+### Prompt Naming Convention
+
+- Persona prompts:
+  - `namespace="agent"`
+  - `adapter=""`
+  - `name="{persona_name}"`
+- Skill prompts:
+  - `namespace="{skill_name}"`
+  - `adapter="{variant}"`
+  - `name="{prompt_key}"`
+
+Examples:
+- `csv_generator / image_variation / master`
+- `csv_generator / picturebook / schema`
+- `hot_topics / analysis / master`
 
 ### Key Classes & Functions
 

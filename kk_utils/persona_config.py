@@ -69,20 +69,87 @@ def _load_yaml(config_path: Path) -> Dict:
         return {}
 
 
+def _load_persona_from_db(persona_name: str, db_session) -> Optional[PersonaConfig]:
+    """Load a persona from PostgreSQL if a session is available."""
+    if db_session is None:
+        return None
+    try:
+        from app.models.persona import Persona
+        from app.services.prompt_service import get_prompt_service
+        from kk_utils.skill_manifest import get_skill_manifest
+        from app.services.skill_discovery_service import get_skill_discovery_service
+
+        persona = (
+            db_session.query(Persona)
+            .filter(Persona.persona_name == persona_name)
+            .first()
+        )
+        if persona is None:
+            return None
+
+        prompt = get_prompt_service().get(db_session, namespace="agent", adapter="", name=persona_name)
+        system_prompt = prompt.prompt_text if prompt and prompt.prompt_text else "You are a helpful AI assistant."
+
+        discovery = get_skill_discovery_service()
+        derived_tags: list[str] = []
+        seen: set[str] = set()
+        for skill_name in persona.skills or []:
+            manifest = get_skill_manifest(skill_name)
+            if manifest and manifest.tags:
+                source_tags = list(manifest.tags)
+            else:
+                skill_detail = discovery.get_skill_details(skill_name)
+                source_tags = list(skill_detail.tags or []) if skill_detail else []
+            if not source_tags:
+                source_tags = [skill_name]
+            for tag in source_tags:
+                if tag and tag not in seen:
+                    seen.add(tag)
+                    derived_tags.append(tag)
+
+        return PersonaConfig(
+            name=persona.persona_name,
+            display_name=persona.display_name,
+            collection=persona.collection,
+            skills=list(persona.skills or []),
+            skill_tags=derived_tags,
+            system_prompt=system_prompt.strip(),
+            adapter_type=persona.adapter_type or "agent_me",
+            adapter_prompt_template=persona.persona_name,
+            adapter_schema=None,
+        )
+    except Exception as e:
+        logger.warning(f"Failed to load persona '{persona_name}' from DB: {e}")
+        return None
+
+
 def load_persona(
     persona_name: str,
-    config_path: Path,
+    config_path: Optional[Path] = None,
+    db_session=None,
 ) -> Optional[PersonaConfig]:
     """
-    Load a persona by name from personas.yaml.
+    Load a persona by name.
+
+    Priority:
+    1. PostgreSQL personas table when db_session is provided
+    2. personas.yaml fallback
 
     Args:
         persona_name: Persona key (e.g. "kengkoon", "test")
-        config_path: Path to personas.yaml (required — each app provides its own).
+        config_path: Path to personas.yaml fallback (each app provides its own)
+        db_session: Optional SQLAlchemy session for DB-backed personas.
 
     Returns:
         PersonaConfig or None if persona not found.
     """
+    db_persona = _load_persona_from_db(persona_name, db_session)
+    if db_persona is not None:
+        return db_persona
+
+    if config_path is None:
+        return None
+
     path = config_path
     data = _load_yaml(path)
     raw = data.get("personas", {}).get(persona_name)

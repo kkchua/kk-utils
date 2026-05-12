@@ -100,3 +100,7 @@ python -m pytest -v
 - This library is a local dependency — not published to PyPI
 - Used by `personal-assistant/backend/app/core/env_loader.py` and `logging_config.py` (thin wrappers)
 - The RAG module in `kk_utils/rag/` provides a shared ChromaDB client interface
+- Persona loading now prefers PostgreSQL-backed `personas` data when a DB session is available.
+- Persona prompts are resolved from `llm_prompts` using `namespace="agent"`, `adapter=""`, and `name="{persona_name}"`.
+- Skill prompts follow the same registry pattern with `namespace="{skill_name}"`, `adapter="{variant}"`, and `name="{prompt_key}"`.
+- `skill_tags` are derived from the assigned skills rather than treated as manual source-of-truth data.

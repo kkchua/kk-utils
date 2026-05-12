@@ -177,7 +177,11 @@ class MasterAgent:
             raise ValueError("personas_config_path not set")
         
         # 1. Load persona
-        persona = load_persona(persona_name, config_path=self.personas_config_path)
+        persona = load_persona(
+            persona_name,
+            config_path=self.personas_config_path,
+            db_session=db_session,
+        )
         if persona is None:
             raise ValueError(f"Persona '{persona_name}' not found")
 
@@ -332,6 +336,16 @@ class MasterAgent:
 
         # 6. Load tools from registry
         tools = self._load_tools(final_skill_tags)
+        tool_names = [
+            tool.get("function", {}).get("name", "unknown")
+            for tool in tools
+        ]
+        logger.info(
+            "MasterAgent: resolved_skill_tags=%s tool_count=%d tool_names=%s",
+            final_skill_tags,
+            len(tools),
+            tool_names,
+        )
 
         # 7. Build system prompt (MasterAgent controls loading, NOT adapter)
         if system_prompt_override:
@@ -432,6 +446,8 @@ class MasterAgent:
                     "model": model,
                     "skills": list(skills) if skills else [],
                     "skill_tags": list(skill_tags) if skill_tags else [],
+                    "resolved_skill_tags": list(final_skill_tags) if final_skill_tags else [],
+                    "resolved_tool_names": tool_names,
                 },
             )
         # === END DEBUG MODE ===
@@ -447,6 +463,13 @@ class MasterAgent:
         
         # 9. Post-process (adapter-specific)
         response = adapter.post_process(response)
+        if response.metadata is None:
+            response.metadata = {}
+        response.metadata.update({
+            "resolved_skill_tags": list(final_skill_tags) if final_skill_tags else [],
+            "resolved_tool_names": tool_names,
+            "tool_count": len(tools),
+        })
         
         return response
     
