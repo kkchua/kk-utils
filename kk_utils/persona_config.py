@@ -127,18 +127,20 @@ def load_persona(
     persona_name: str,
     config_path: Optional[Path] = None,
     db_session=None,
+    allow_yaml_fallback: bool = True,
 ) -> Optional[PersonaConfig]:
     """
     Load a persona by name.
 
     Priority:
     1. PostgreSQL personas table when db_session is provided
-    2. personas.yaml fallback
+    2. personas.yaml fallback (only when allow_yaml_fallback=True)
 
     Args:
         persona_name: Persona key (e.g. "kengkoon", "test")
         config_path: Path to personas.yaml fallback (each app provides its own)
         db_session: Optional SQLAlchemy session for DB-backed personas.
+        allow_yaml_fallback: If False, do not fall back to personas.yaml.
 
     Returns:
         PersonaConfig or None if persona not found.
@@ -147,7 +149,12 @@ def load_persona(
     if db_persona is not None:
         return db_persona
 
-    if config_path is None:
+    if not allow_yaml_fallback or config_path is None:
+        if db_session is not None:
+            logger.warning(
+                "Persona '%s' not found in PostgreSQL personas; YAML fallback disabled",
+                persona_name,
+            )
         return None
 
     path = config_path

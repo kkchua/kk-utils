@@ -63,6 +63,7 @@ class MasterAgent:
         personas_config_path: Optional[str] = None,
         auto_register_adapters: bool = True,
         auto_register_handlers: bool = True,
+        allow_persona_yaml_fallback: bool = True,
     ):
         """
         Initialize Master Agent.
@@ -73,6 +74,7 @@ class MasterAgent:
             auto_register_handlers: If True, auto-register skill handlers
         """
         self.personas_config_path = Path(personas_config_path) if personas_config_path else None
+        self.allow_persona_yaml_fallback = allow_persona_yaml_fallback
         self.adapter_registry = AgentRegistry.instance()
         
         # Initialize skill handler registry
@@ -181,6 +183,7 @@ class MasterAgent:
             persona_name,
             config_path=self.personas_config_path,
             db_session=db_session,
+            allow_yaml_fallback=self.allow_persona_yaml_fallback,
         )
         if persona is None:
             raise ValueError(f"Persona '{persona_name}' not found")
