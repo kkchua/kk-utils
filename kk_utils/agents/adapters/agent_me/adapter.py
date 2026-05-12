@@ -30,6 +30,10 @@ logger = logging.getLogger(__name__)
 
 _ADAPTER_DIR = Path(__file__).parent
 
+# Import AgentMe tools for side effects so the digital_me baseline registers
+# itself into the shared AgentRegistry before tool selection runs.
+from . import tools as _agent_me_tools  # noqa: F401
+
 
 class AgentMeAdapter(BaseAgentAdapter):
     """
