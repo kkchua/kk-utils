@@ -60,6 +60,7 @@ def search_digital_me(
     top_k: int = 3,
     source_type: Optional[str] = None,
     user_id: Optional[str] = None,
+    persona_collection: Optional[str] = None,
 ) -> dict:
     """
     Search Digital Me knowledge base using RAG.
@@ -74,49 +75,65 @@ def search_digital_me(
         dict with chunks, confidence, sources
     """
     _trace(
-        f"search_digital_me start query={query!r} top_k={top_k} source_type={source_type!r}"
+        f"search_digital_me start query={query!r} top_k={top_k} source_type={source_type!r} persona_collection={persona_collection!r}"
     )
     from kk_utils.rag.rag_engine import RAGEngine
-
-    rag = RAGEngine(collection_name="digital_me")
 
     filter_metadata = {}
     if source_type and source_type != "all":
         filter_metadata["type"] = source_type
 
-    result = rag.query(
-        question=query,
-        top_k=top_k * 2,
-        filter_metadata=filter_metadata,
-        min_confidence=0.1,
-    )
+    def _run_query(collection_name: str) -> dict:
+        rag = RAGEngine(collection_name=collection_name)
+        result = rag.query(
+            question=query,
+            top_k=top_k * 2,
+            filter_metadata=filter_metadata,
+            min_confidence=0.1,
+        )
 
-    # Sanitize chunks (remove user_id and sensitive metadata)
-    sanitized_chunks = []
-    for chunk in result.chunks if result.has_results else []:
-        sanitized_chunk = {
-            "content": chunk.get("content", ""),
-            "metadata": {
-                k: v for k, v in chunk.get("metadata", {}).items()
-                if k not in ["user_id", "access_level"]
-            },
+        sanitized_chunks = []
+        for chunk in result.chunks if result.has_results else []:
+            sanitized_chunk = {
+                "content": chunk.get("content", ""),
+                "metadata": {
+                    k: v for k, v in chunk.get("metadata", {}).items()
+                    if k not in ["user_id", "access_level"]
+                },
+            }
+            sanitized_chunks.append(sanitized_chunk)
+
+        return {
+            "query": query,
+            "chunks": sanitized_chunks[:top_k],
+            "confidence": result.confidence if result.has_results else 0.0,
+            "sources": result.sources if result.has_results else [],
+            "security_filter_applied": True,
+            "filtered_count": len(result.chunks if result.has_results else []) - len(sanitized_chunks),
+            "message": result.message,
+            "retrieval_time_ms": result.retrieval_time_ms,
+            "chunks_searched": result.chunks_searched,
+            "avg_distance": result.avg_distance,
+            "collection_name": collection_name,
         }
-        sanitized_chunks.append(sanitized_chunk)
 
-    output = {
-        "query": query,
-        "chunks": sanitized_chunks[:top_k],
-        "confidence": result.confidence if result.has_results else 0.0,
-        "sources": result.sources if result.has_results else [],
-        "security_filter_applied": True,
-        "filtered_count": len(result.chunks if result.has_results else []) - len(sanitized_chunks),
-        "message": result.message,
-        "retrieval_time_ms": result.retrieval_time_ms,
-        "chunks_searched": result.chunks_searched,
-        "avg_distance": result.avg_distance,
-    }
+    preferred_collection = persona_collection or "digital_me"
+    output = _run_query(preferred_collection)
+
+    if output["confidence"] <= 0.1 and preferred_collection != "digital_me":
+        _trace(
+            f"search_digital_me fallback to shared collection after {preferred_collection!r}"
+        )
+        fallback_output = _run_query("digital_me")
+        if fallback_output["confidence"] >= output["confidence"]:
+            output = fallback_output
+        else:
+            output["fallback_collection_name"] = "digital_me"
+            output["fallback_confidence"] = fallback_output["confidence"]
+
     _trace(
         "search_digital_me done "
+        f"collection={output.get('collection_name')!r} "
         f"confidence={output['confidence']:.3f} "
         f"chunks={len(output['chunks'])} "
         f"time_ms={output['retrieval_time_ms']:.0f}"
@@ -135,6 +152,7 @@ def get_work_experience(
     company: Optional[str] = None,
     search_query: Optional[str] = None,
     user_id: Optional[str] = None,
+    persona_collection: Optional[str] = None,
 ) -> dict:
     """
     Get work experience — RAG first, structured fallback.
@@ -150,7 +168,13 @@ def get_work_experience(
     _trace("get_work_experience start")
     # Try RAG first
     rag_query = search_query or (f"work experience at {company}" if company else "work experience and employment history")
-    rag_result = search_digital_me(query=rag_query, top_k=5, source_type=None, user_id=user_id)
+    rag_result = search_digital_me(
+        query=rag_query,
+        top_k=5,
+        source_type=None,
+        user_id=user_id,
+        persona_collection=persona_collection,
+    )
 
     if rag_result.get("confidence", 0.0) > 0.1:
         _trace("get_work_experience using RAG")
@@ -183,6 +207,7 @@ def get_skills(
     min_proficiency: int = 1,
     search_query: Optional[str] = None,
     user_id: Optional[str] = None,
+    persona_collection: Optional[str] = None,
 ) -> dict:
     """
     Get skills — RAG first, structured fallback.
@@ -199,7 +224,13 @@ def get_skills(
     _trace("get_skills start")
     # Try RAG first
     rag_query = search_query or (f"{category} skills" if category else "technical skills and expertise")
-    rag_result = search_digital_me(query=rag_query, top_k=5, source_type=None, user_id=user_id)
+    rag_result = search_digital_me(
+        query=rag_query,
+        top_k=5,
+        source_type=None,
+        user_id=user_id,
+        persona_collection=persona_collection,
+    )
 
     if rag_result.get("confidence", 0.0) > 0.1:
         _trace("get_skills using RAG")
@@ -226,6 +257,7 @@ def get_education(
     degree_level: Optional[str] = None,
     field_of_study: Optional[str] = None,
     user_id: Optional[str] = None,
+    persona_collection: Optional[str] = None,
 ) -> dict:
     """
     Get education history — RAG first, structured fallback.
@@ -241,7 +273,13 @@ def get_education(
     _trace("get_education start")
     # Try RAG first
     rag_query = " ".join(filter(None, ["education academic background university degree", degree_level, field_of_study]))
-    rag_result = search_digital_me(query=rag_query, top_k=5, source_type=None, user_id=user_id)
+    rag_result = search_digital_me(
+        query=rag_query,
+        top_k=5,
+        source_type=None,
+        user_id=user_id,
+        persona_collection=persona_collection,
+    )
 
     if rag_result.get("confidence", 0.0) > 0.1:
         _trace("get_education using RAG")
@@ -269,6 +307,7 @@ def get_projects(
     role: Optional[str] = None,
     search_query: Optional[str] = None,
     user_id: Optional[str] = None,
+    persona_collection: Optional[str] = None,
 ) -> dict:
     """
     Get projects — RAG first, structured fallback.
@@ -289,7 +328,13 @@ def get_projects(
         f"{role} role projects" if role else
         "projects and accomplishments"
     )
-    rag_result = search_digital_me(query=rag_query, top_k=5, source_type=None, user_id=user_id)
+    rag_result = search_digital_me(
+        query=rag_query,
+        top_k=5,
+        source_type=None,
+        user_id=user_id,
+        persona_collection=persona_collection,
+    )
 
     if rag_result.get("confidence", 0.0) > 0.1:
         _trace("get_projects using RAG")
@@ -316,6 +361,7 @@ def get_certifications(
     issuer: Optional[str] = None,
     include_expired: bool = False,
     user_id: Optional[str] = None,
+    persona_collection: Optional[str] = None,
 ) -> dict:
     """
     Get certifications — RAG first, structured fallback.
@@ -331,7 +377,13 @@ def get_certifications(
     _trace("get_certifications start")
     # Try RAG first
     rag_query = " ".join(filter(None, ["professional certifications credentials qualifications", issuer]))
-    rag_result = search_digital_me(query=rag_query, top_k=5, source_type=None, user_id=user_id)
+    rag_result = search_digital_me(
+        query=rag_query,
+        top_k=5,
+        source_type=None,
+        user_id=user_id,
+        persona_collection=persona_collection,
+    )
 
     if rag_result.get("confidence", 0.0) > 0.1:
         _trace("get_certifications using RAG")
@@ -354,7 +406,10 @@ def get_certifications(
     access_level="anonymous",
     sensitivity="low",
 )
-def get_digital_me_summary(user_id: Optional[str] = None) -> dict:
+def get_digital_me_summary(
+    user_id: Optional[str] = None,
+    persona_collection: Optional[str] = None,
+) -> dict:
     """
     Get public-friendly Digital Me summary.
 

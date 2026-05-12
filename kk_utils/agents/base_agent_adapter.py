@@ -316,6 +316,7 @@ class BaseAgentAdapter(ABC):
             conversation_history=[m for m in messages if m["role"] in ["user", "assistant"] and m.get("role") != "system"],
             agent_name=agent_name,
             trace_callback=trace_callback,
+            persona_collection=persona.collection if persona else None,
         )
 
         # Return response with trace_events in metadata

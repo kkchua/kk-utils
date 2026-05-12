@@ -299,6 +299,7 @@ class AIService:
         dedup_cache: Dict,
         trace_callback=None,
         trace_prefix: str = "Agent:",
+        persona_collection: Optional[str] = None,
     ) -> List:
         """Convert AgentRegistry OpenAI-format dicts into SDK FunctionTool objects.
 
@@ -324,7 +325,15 @@ class AIService:
             description = fn_def.get("description", "")
             params_schema = fn_def.get("parameters", {"type": "object", "properties": {}})
 
-            async def on_invoke(ctx, args_json, _name=tool_name, _trace=trace_callback, _prefix=trace_prefix):
+            async def on_invoke(
+                ctx,
+                args_json,
+                _name=tool_name,
+                _trace=trace_callback,
+                _prefix=trace_prefix,
+                _persona_collection=persona_collection,
+                _tool_def=tool_def,
+            ):
                 try:
                     tool_args = _json.loads(args_json) if args_json else {}
                 except Exception:
@@ -334,6 +343,11 @@ class AIService:
                 _null_vals = {"null", "NULL", "None", "none"}
                 tool_args = {k: (None if isinstance(v, str) and v in _null_vals else v) for k, v in tool_args.items()}
                 tool_args = {k: v for k, v in tool_args.items() if v is not None}
+                if _persona_collection:
+                    function_ref = _tool_def.get("function_ref")
+                    tool_tags = list(getattr(function_ref, "__agent_tool__", {}).get("tags", [])) if function_ref else []
+                    if "digital_me" in tool_tags:
+                        tool_args.setdefault("persona_collection", _persona_collection)
 
                 logger.debug(f"Tool call: {_name}({tool_args})")
                 result = registry.execute(_name, **tool_args)
@@ -425,6 +439,7 @@ class AIService:
         max_plan_steps: int = 8,
         trace_callback: Optional[Callable[[str], None]] = None,
         agent_name: Optional[str] = None,  # For trace name customization
+        persona_collection: Optional[str] = None,
     ) -> str:
         """
         Chat with tool calling via OpenAI Agents SDK.
@@ -479,7 +494,13 @@ class AIService:
         dedup_cache: Dict[str, Any] = {}
         # Build trace prefix from agent_name (e.g., "Keng Koon:" or "AI Assistant:")
         trace_prefix = f"{agent_name}:" if agent_name else "Agent:"
-        sdk_tools = self._build_sdk_tools(tools or [], dedup_cache, trace_callback=trace_callback, trace_prefix=trace_prefix)
+        sdk_tools = self._build_sdk_tools(
+            tools or [],
+            dedup_cache,
+            trace_callback=trace_callback,
+            trace_prefix=trace_prefix,
+            persona_collection=persona_collection,
+        )
         if progress_callback is not None:
             sdk_tools.insert(0, self._build_progress_tool(progress_callback, max_plan_steps))
 
