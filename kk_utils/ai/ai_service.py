@@ -185,21 +185,20 @@ class AIService:
         self.base_url = api_base_url
         if not self.base_url:
             if self.provider in ("qwen", "dashscope"):
-                self.base_url = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
-                self.base_url = os.environ.get("DASHSCOPE_API_URL", "")
+                self.base_url = os.environ.get("DASHSCOPE_API_URL", "https://coding-intl.dashscope.aliyuncs.com/v1")
             if self.provider in ("anthropic"):
-                self.base_url = os.environ.get("ANTHROPIC_API_URL", "")
+                self.base_url = os.environ.get("ANTHROPIC_API_URL", "https://api.anthropic.com/v1")
             if self.provider in ("deepseek"):
-                self.base_url = os.environ.get("DEEPSEEK_API_URL", "")
+                self.base_url = os.environ.get("DEEPSEEK_API_URL", "https://api.deepseek.com")
             elif self.provider == "ollama":
-                self.base_url = "http://localhost:11434/v1"
-
+                self.base_url = os.environ.get("OLLAMA_API_URL", "http://localhost:11434/v1")
+            
         client_kwargs: Dict[str, Any] = {"api_key": self.api_key}
         if self.base_url:
             client_kwargs["base_url"] = self.base_url
 
         self.client = AsyncOpenAI(**client_kwargs)
-        logger.info(f"AIService initialized: {api_model} (provider={self.provider})")
+        logger.info(f"AIService initialized: {api_model} (provider={self.provider}) base_url={self.base_url or '(default)'}")
 
         self._prompts = self._load_prompts()
 
@@ -573,6 +572,9 @@ class AIService:
                 trace_callback(f"{trace_prefix} final response received")
 
             self._on_usage(streamed, context, TextResult)
+            if streamed.raw_responses:
+                actual_model = getattr(streamed.raw_responses[-1], "model", "unknown")
+                logger.info(f"chat_with_tools: API responded with model='{actual_model}'")
             final = last_text_response or streamed.final_output or ""
             # Guard: discard if response looks like a leaked plan-steps JSON object
             # (report_progress args leaked as final_output when LLM produces no text)
@@ -881,6 +883,81 @@ class AIService:
 
         logger.info(
             f"  [vision] done | provider={self.provider} model={self.model} | "
+            f"tokens={prompt_tokens}+{completion_tokens}={total_tokens} | {elapsed_ms}ms"
+        )
+
+        return {
+            "raw_content": raw_content,
+            "finish_reason": finish_reason,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "elapsed_ms": elapsed_ms,
+            "api_model": self.model,
+            "base_url": self.base_url or "https://api.openai.com/v1",
+        }
+
+    async def generate_json_raw(
+        self,
+        system_prompt: str,
+        user_text: str,
+    ) -> Dict[str, Any]:
+        """
+        Single-shot text call with response_format={"type": "json_object"}.
+
+        Broadly compatible — works with providers that support json_object mode
+        but NOT full JSON-schema structured output (e.g. DeepSeek, some Qwen endpoints).
+
+        The prompt must mention "json" and describe the expected structure.
+        Returns the same dict shape as generate_vision_raw (raw_content, tokens, etc.).
+        """
+        import time
+
+        if not self.client or self.provider == "mock":
+            raise RuntimeError(f"AIService not ready (provider={self.provider})")
+
+        if not AGENTS_SDK_AVAILABLE:
+            raise RuntimeError("OpenAI Agents SDK not available")
+
+        sdk_model = OpenAIChatCompletionsModel(
+            model=self.model,
+            openai_client=self.client,
+        )
+
+        use_json_format = self.provider not in ("anthropic",)
+        agent = SDKAgent(
+            name="JsonGenerationAgent",
+            instructions=system_prompt,
+            model=sdk_model,
+            model_settings=ModelSettings(
+                extra_body={"response_format": {"type": "json_object"}}
+            ) if (ModelSettings and use_json_format) else None,
+        )
+
+        user_messages = [{"role": "user", "content": user_text}]
+
+        t0 = time.monotonic()
+        with trace("json_generation"):
+            result = await Runner.run(agent, user_messages)
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+
+        raw_content = result.final_output if isinstance(result.final_output, str) else ""
+
+        prompt_tokens = completion_tokens = total_tokens = 0
+        finish_reason = "stop"
+        if result.raw_responses:
+            last = result.raw_responses[-1]
+            usage = getattr(last, "usage", None)
+            if usage:
+                prompt_tokens = getattr(usage, "input_tokens", 0) or getattr(usage, "prompt_tokens", 0)
+                completion_tokens = getattr(usage, "output_tokens", 0) or getattr(usage, "completion_tokens", 0)
+                total_tokens = prompt_tokens + completion_tokens
+            choices = getattr(last, "choices", None)
+            if choices:
+                finish_reason = getattr(choices[-1], "finish_reason", "stop") or "stop"
+
+        logger.info(
+            f"  [json_gen] done | provider={self.provider} model={self.model} | "
             f"tokens={prompt_tokens}+{completion_tokens}={total_tokens} | {elapsed_ms}ms"
         )
 

@@ -96,16 +96,16 @@ class MasterAgent:
         except ImportError as e:
             logger.warning(f"Could not register built-in adapters: {e}")
 
-        # Register coder adapters
-        try:
-            from .coder import CoderRegistry, DescImageCoderAdapter, CsvGeneratorCoderAdapter
+        # # Register coder adapters
+        # try:
+        #     from .coder import CoderRegistry, DescImageCoderAdapter, CsvGeneratorCoderAdapter
 
-            coder_registry = CoderRegistry.instance()
-            coder_registry.register("desc_image", DescImageCoderAdapter, override=True)
-            coder_registry.register("csv_generator", CsvGeneratorCoderAdapter, override=True)
-            logger.info("Registered built-in coder adapters: desc_image, csv_generator")
-        except ImportError as e:
-            logger.warning(f"Could not register built-in coder adapters: {e}")
+        #     coder_registry = CoderRegistry.instance()
+        #     coder_registry.register("desc_image", DescImageCoderAdapter, override=True)
+        #     coder_registry.register("csv_generator", CsvGeneratorCoderAdapter, override=True)
+        #     logger.info("Registered built-in coder adapters: desc_image, csv_generator")
+        # except ImportError as e:
+        #     logger.warning(f"Could not register built-in coder adapters: {e}")
     
     def _register_builtin_handlers(self) -> None:
         """Register built-in skill handlers."""
@@ -143,6 +143,7 @@ class MasterAgent:
         skill_adapter: Optional[str] = None,         # e.g. "image_variation"
         prompt_name: Optional[str] = None,           # e.g. "master_prompt_qwen"
         attachments: Optional[List[str]] = None,
+        image_data: Optional[List[Dict[str, str]]] = None,  # pre-resolved [{b64, mime, filename}]
         input_values: Optional[Dict[str, Any]] = None,
         system_prompt_override: Optional[str] = None,  # pre-resolved prompt text (LLM path only)
         db_session=None,  # Optional DB session for loading prompts from llm_prompts table
@@ -176,28 +177,32 @@ class MasterAgent:
             raise ValueError("personas_config_path not set")
         
         # 1. Load persona
-        persona = load_persona(persona_name, config_path=self.personas_config_path)
+        persona = load_persona(
+            persona_name,
+            config_path=self.personas_config_path,
+            db_session=db_session,
+        )
         if persona is None:
             raise ValueError(f"Persona '{persona_name}' not found")
 
-        # 1b. Coder routing — if adapter_type starts with "coder_", route to coder adapter
-        adapter_type = persona.adapter_type or "agent_me"
-        if adapter_type.startswith("coder_"):
-            coder_adapter_name = adapter_type[len("coder_"):]  # e.g., "desc_image"
-            logger.info(f"MasterAgent: routing to coder adapter '{coder_adapter_name}'")
-            return await self._execute_coder(
-                coder_adapter_name=coder_adapter_name,
-                persona=persona,
-                message=message,
-                context={
-                    "user_id": user_id,
-                    "user_role": user_role,
-                    "persona_collection": persona.collection,
-                    "db_session": db_session,
-                    "input_values": input_values,
-                    "cwd": Path.cwd(),
-                },
-            )
+        # # 1b. Coder routing — if adapter_type starts with "coder_", route to coder adapter
+        # adapter_type = persona.adapter_type or "agent_me"
+        # if adapter_type.startswith("coder_"):
+        #     coder_adapter_name = adapter_type[len("coder_"):]  # e.g., "desc_image"
+        #     logger.info(f"MasterAgent: routing to coder adapter '{coder_adapter_name}'")
+        #     return await self._execute_coder(
+        #         coder_adapter_name=coder_adapter_name,
+        #         persona=persona,
+        #         message=message,
+        #         context={
+        #             "user_id": user_id,
+        #             "user_role": user_role,
+        #             "persona_collection": persona.collection,
+        #             "db_session": db_session,
+        #             "input_values": input_values,
+        #             "cwd": Path.cwd(),
+        #         },
+        #     )
 
         # 2. Get adapter
         adapter_type = persona.adapter_type or "agent_me"
@@ -243,6 +248,62 @@ class MasterAgent:
                     metadata=skill_result.to_dict(),
                 )
 
+        # 2c. Vision path — when pre-resolved image data is provided, use generate_vision_raw
+        #     instead of the plain-text chat path. Reuses the same infrastructure as
+        #     the vision_pipeline handler (no code duplication).
+        valid_images = [img for img in (image_data or []) if img.get("b64")]
+        if valid_images and not execution_type:
+            logger.info(f"MasterAgent: vision path — {len(valid_images)} image(s)")
+            if system_prompt_override:
+                system_prompt = system_prompt_override
+            else:
+                system_prompt = self._load_system_prompt(adapter, persona, db_session)
+            if input_values:
+                system_prompt = self._apply_input_values(system_prompt, input_values)
+            img = valid_images[0]  # use first valid image
+            try:
+                vision_result = await adapter.generate_vision_raw(
+                    system_prompt=system_prompt,
+                    user_text=message,
+                    image_b64=img["b64"],
+                    image_mime=img["mime"],
+                    model=model,
+                )
+                # generate_vision_raw returns {raw_content, finish_reason, ...}
+                # raw_content may be a JSON string like {"description": "..."} or plain text
+                import json as _json
+                raw = vision_result.get("raw_content", "")
+                response_text = vision_result.get("response") or vision_result.get("response_text")
+                if not response_text and raw:
+                    try:
+                        parsed = _json.loads(raw)
+                        if isinstance(parsed, dict):
+                            # Extract first string value from known keys, then any string value
+                            for key in ("description", "text", "response", "content", "result"):
+                                if isinstance(parsed.get(key), str):
+                                    response_text = parsed[key]
+                                    break
+                            if not response_text:
+                                response_text = next(
+                                    (v for v in parsed.values() if isinstance(v, str)), raw
+                                )
+                        else:
+                            response_text = raw
+                    except (_json.JSONDecodeError, ValueError):
+                        response_text = raw
+                if not response_text:
+                    response_text = str(vision_result)
+            except Exception as e:
+                logger.error(f"MasterAgent: vision call failed: {e}", exc_info=True)
+                response_text = "I encountered an error processing the image. Please try again."
+            return AgentResponse(
+                response_text=response_text,
+                agent_type=adapter_type,
+                persona_name=persona_name,
+                collection=persona.collection,
+                tools_available=0,
+            )
+
         # 3. Load schema config (optional)
         schema_config = adapter.get_tools_config(persona) or {}
 
@@ -275,6 +336,16 @@ class MasterAgent:
 
         # 6. Load tools from registry
         tools = self._load_tools(final_skill_tags)
+        tool_names = [
+            tool.get("function", {}).get("name", "unknown")
+            for tool in tools
+        ]
+        logger.info(
+            "MasterAgent: resolved_skill_tags=%s tool_count=%d tool_names=%s",
+            final_skill_tags,
+            len(tools),
+            tool_names,
+        )
 
         # 7. Build system prompt (MasterAgent controls loading, NOT adapter)
         if system_prompt_override:
@@ -284,19 +355,20 @@ class MasterAgent:
             system_prompt = self._load_system_prompt(adapter, persona, db_session)
         
         # GOVERNOR: Append global system prompt suffix (tool limits, rules, etc.)
-        # This is done in MasterAgent so it applies uniformly to ALL adapters
-        try:
-            from app.core.governor import PersonalAssistantGovernor
-            governor = PersonalAssistantGovernor.instance()
-            governor_suffix = governor.get_global_system_prompt_suffix()
-            
-            if governor_suffix and governor_suffix.strip():
-                system_prompt = system_prompt.rstrip() + "\n\n" + governor_suffix.rstrip()
-                logger.info(f"MasterAgent: Appended Governor suffix ({len(governor_suffix)} chars)")
-        except ImportError:
-            logger.debug("MasterAgent: Governor not available - skipping system prompt suffix")
-        except Exception as e:
-            logger.warning(f"MasterAgent: Failed to append Governor suffix: {e}")
+        # Skipped for admin users so they can verify the actual underlying AI model.
+        if user_role != "admin":
+            try:
+                from app.core.governor import PersonalAssistantGovernor
+                governor = PersonalAssistantGovernor.instance()
+                governor_suffix = governor.get_global_system_prompt_suffix()
+
+                if governor_suffix and governor_suffix.strip():
+                    system_prompt = system_prompt.rstrip() + "\n\n" + governor_suffix.rstrip()
+                    logger.info(f"MasterAgent: Appended Governor suffix ({len(governor_suffix)} chars)")
+            except ImportError:
+                logger.debug("MasterAgent: Governor not available - skipping system prompt suffix")
+            except Exception as e:
+                logger.warning(f"MasterAgent: Failed to append Governor suffix: {e}")
 
         # Apply input_values substitution to system prompt (replaces {key} placeholders)
         if input_values:
@@ -374,6 +446,8 @@ class MasterAgent:
                     "model": model,
                     "skills": list(skills) if skills else [],
                     "skill_tags": list(skill_tags) if skill_tags else [],
+                    "resolved_skill_tags": list(final_skill_tags) if final_skill_tags else [],
+                    "resolved_tool_names": tool_names,
                 },
             )
         # === END DEBUG MODE ===
@@ -389,6 +463,13 @@ class MasterAgent:
         
         # 9. Post-process (adapter-specific)
         response = adapter.post_process(response)
+        if response.metadata is None:
+            response.metadata = {}
+        response.metadata.update({
+            "resolved_skill_tags": list(final_skill_tags) if final_skill_tags else [],
+            "resolved_tool_names": tool_names,
+            "tool_count": len(tools),
+        })
         
         return response
     

@@ -38,12 +38,18 @@ logger = logging.getLogger(__name__)
 
 # Known skill module names under kk_agent_skills
 _KNOWN_SKILLS = [
-    "digital_me",
-    "digital_me_rag",
-    "notes",
-    "web_search",
     "ai_tools",
     "article_generation",
+    "csv_generator",
+    "csv_generator_v2",
+    "deep_research",
+    "digital_me",
+    "digital_me_rag",
+    "extract_desc",
+    "hot_topics",
+    "notes",
+    "portfolio_publisher",
+    "web_search",
 ]
 
 

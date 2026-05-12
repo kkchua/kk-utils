@@ -2,10 +2,10 @@
   "coder_aliases": {
     "desc_image": {
       "coder": "qwen",
-      "model": "qwen-coder-plus-latest",
+      "model": "qwen3.6-plus",
       "auth_type": "dashscope",
       "openai_api_key_env": "DASHSCOPE_API_KEY",
-      "openai_base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+      "openai_base_url": "https://coding-intl.dashscope.aliyuncs.com/v1",
       "cli_params": {
         "cmd": ["qwen"],
         "flags": ["--output-format", "json", "--approval-mode", "yolo", "--session-id", "{{session_id}}"],
@@ -20,10 +20,10 @@
     },
     "csv_generator": {
       "coder": "qwen",
-      "model": "qwen-coder-plus-latest",
+      "model": "qwen3.6-plus",
       "auth_type": "dashscope",
       "openai_api_key_env": "DASHSCOPE_API_KEY",
-      "openai_base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+      "openai_base_url": "https://coding-intl.dashscope.aliyuncs.com/v1",
       "cli_params": {
         "cmd": ["qwen"],
         "flags": ["--output-format", "json", "--approval-mode", "yolo", "--session-id", "{{session_id}}"],
@@ -38,10 +38,10 @@
     },
     "qwen-default": {
       "coder": "qwen",
-      "model": "qwen-coder-plus-latest",
+      "model": "qwen3.6-plus",
       "auth_type": "dashscope",
       "openai_api_key_env": "DASHSCOPE_API_KEY",
-      "openai_base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+      "openai_base_url": "https://coding-intl.dashscope.aliyuncs.com/v1",
       "cli_params": {
         "cmd": ["qwen"],
         "flags": ["--output-format", "json", "--approval-mode", "yolo"],
