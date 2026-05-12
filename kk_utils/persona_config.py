@@ -39,8 +39,8 @@ class PersonaConfig:
     name: str
     display_name: str
     collection: str       # ChromaDB collection name (also used for SL check)
-    skills: List[str]     # kk_agent_skills module names to import
-    skill_tags: List[str] # tool registry tags to include
+    skills: List[str]     # Persona-specific skills; adapter defaults are merged at runtime
+    skill_tags: List[str] # Persona-specific tool tags; adapter defaults are merged at runtime
     system_prompt: str
     # NEW: Adapter configuration (for Master Agent architecture)
     adapter_type: Optional[str] = None  # e.g., "agent_me", "ai_assistant"
@@ -135,6 +135,10 @@ def load_persona(
     Priority:
     1. PostgreSQL personas table when db_session is provided
     2. personas.yaml fallback (only when allow_yaml_fallback=True)
+    
+    Note:
+    Adapter baseline skills/tags are merged later by MasterAgent. The stored
+    persona skills/tags are treated as additions.
 
     Args:
         persona_name: Persona key (e.g. "kengkoon", "test")
