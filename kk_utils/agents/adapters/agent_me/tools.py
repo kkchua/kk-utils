@@ -17,8 +17,13 @@ Tools:
 from typing import Optional, List, Dict, Any
 import logging
 from kk_utils.agent_tools import agent_tool
+from kk_utils.execution_trace import emit_trace
 
 logger = logging.getLogger(__name__)
+
+
+def _trace(message: str) -> None:
+    emit_trace(f"agent_me.{message}")
 
 
 @agent_tool(
@@ -68,6 +73,9 @@ def search_digital_me(
     Returns:
         dict with chunks, confidence, sources
     """
+    _trace(
+        f"search_digital_me start query={query!r} top_k={top_k} source_type={source_type!r}"
+    )
     from kk_utils.rag.rag_engine import RAGEngine
 
     rag = RAGEngine(collection_name="digital_me")
@@ -95,7 +103,7 @@ def search_digital_me(
         }
         sanitized_chunks.append(sanitized_chunk)
 
-    return {
+    output = {
         "query": query,
         "chunks": sanitized_chunks[:top_k],
         "confidence": result.confidence if result.has_results else 0.0,
@@ -107,6 +115,13 @@ def search_digital_me(
         "chunks_searched": result.chunks_searched,
         "avg_distance": result.avg_distance,
     }
+    _trace(
+        "search_digital_me done "
+        f"confidence={output['confidence']:.3f} "
+        f"chunks={len(output['chunks'])} "
+        f"time_ms={output['retrieval_time_ms']:.0f}"
+    )
+    return output
 
 
 @agent_tool(
@@ -132,11 +147,13 @@ def get_work_experience(
     Returns:
         dict with experiences or RAG chunks
     """
+    _trace("get_work_experience start")
     # Try RAG first
     rag_query = search_query or (f"work experience at {company}" if company else "work experience and employment history")
     rag_result = search_digital_me(query=rag_query, top_k=5, source_type=None, user_id=user_id)
 
     if rag_result.get("confidence", 0.0) > 0.1:
+        _trace("get_work_experience using RAG")
         return {
             "source": "rag",
             "confidence": rag_result["confidence"],
@@ -148,7 +165,9 @@ def get_work_experience(
     from kk_utils.digital_me.service import get_work_experience as get_work_exp_svc
     experiences = get_work_exp_svc(company=company)
     if not experiences:
+        _trace("get_work_experience no structured data")
         return {"available": False, "message": "Work experience information is not available in my profile yet."}
+    _trace(f"get_work_experience structured count={len(experiences)}")
     return {"source": "structured", "experiences": experiences, "count": len(experiences)}
 
 
@@ -177,18 +196,22 @@ def get_skills(
     Returns:
         dict with skills or RAG chunks
     """
+    _trace("get_skills start")
     # Try RAG first
     rag_query = search_query or (f"{category} skills" if category else "technical skills and expertise")
     rag_result = search_digital_me(query=rag_query, top_k=5, source_type=None, user_id=user_id)
 
     if rag_result.get("confidence", 0.0) > 0.1:
+        _trace("get_skills using RAG")
         return {"source": "rag", "confidence": rag_result["confidence"], "chunks": rag_result["chunks"]}
 
     # Fallback to structured data
     from kk_utils.digital_me.service import get_skills as get_skills_svc
     skills = get_skills_svc(category=category, min_proficiency=min_proficiency)
     if not skills:
+        _trace("get_skills no structured data")
         return {"available": False, "message": "Skills information is not available in my profile yet."}
+    _trace(f"get_skills structured count={len(skills)}")
     return {"source": "structured", "skills": skills, "count": len(skills)}
 
 
@@ -215,18 +238,22 @@ def get_education(
     Returns:
         dict with education or RAG chunks
     """
+    _trace("get_education start")
     # Try RAG first
     rag_query = " ".join(filter(None, ["education academic background university degree", degree_level, field_of_study]))
     rag_result = search_digital_me(query=rag_query, top_k=5, source_type=None, user_id=user_id)
 
     if rag_result.get("confidence", 0.0) > 0.1:
+        _trace("get_education using RAG")
         return {"source": "rag", "confidence": rag_result["confidence"], "chunks": rag_result["chunks"]}
 
     # Fallback to structured data
     from kk_utils.digital_me.service import get_education_service as get_edu_svc
     education = get_edu_svc(degree_level=degree_level, field_of_study=field_of_study)
     if not education:
+        _trace("get_education no structured data")
         return {"available": False, "message": "Education information is not available in my profile yet."}
+    _trace(f"get_education structured count={len(education)}")
     return {"source": "structured", "education": education, "count": len(education)}
 
 
@@ -255,6 +282,7 @@ def get_projects(
     Returns:
         dict with projects or RAG chunks
     """
+    _trace("get_projects start")
     # Try RAG first
     rag_query = search_query or (
         f"{technology} projects" if technology else
@@ -264,13 +292,16 @@ def get_projects(
     rag_result = search_digital_me(query=rag_query, top_k=5, source_type=None, user_id=user_id)
 
     if rag_result.get("confidence", 0.0) > 0.1:
+        _trace("get_projects using RAG")
         return {"source": "rag", "confidence": rag_result["confidence"], "chunks": rag_result["chunks"]}
 
     # Fallback to structured data
     from kk_utils.digital_me.service import get_projects_service as get_proj_svc
     projects = get_proj_svc(technology=technology, role=role)
     if not projects:
+        _trace("get_projects no structured data")
         return {"available": False, "message": "Project information is not available in my profile yet."}
+    _trace(f"get_projects structured count={len(projects)}")
     return {"source": "structured", "projects": projects, "count": len(projects)}
 
 
@@ -297,18 +328,22 @@ def get_certifications(
     Returns:
         dict with certifications or RAG chunks
     """
+    _trace("get_certifications start")
     # Try RAG first
     rag_query = " ".join(filter(None, ["professional certifications credentials qualifications", issuer]))
     rag_result = search_digital_me(query=rag_query, top_k=5, source_type=None, user_id=user_id)
 
     if rag_result.get("confidence", 0.0) > 0.1:
+        _trace("get_certifications using RAG")
         return {"source": "rag", "confidence": rag_result["confidence"], "chunks": rag_result["chunks"]}
 
     # Fallback to structured data
     from kk_utils.digital_me.service import get_certifications_service as get_cert_svc
     certs = get_cert_svc(issuer=issuer, include_expired=include_expired)
     if not certs:
+        _trace("get_certifications no structured data")
         return {"available": False, "message": "Certification information is not available in my profile yet."}
+    _trace(f"get_certifications structured count={len(certs)}")
     return {"source": "structured", "certifications": certs, "count": len(certs)}
 
 
@@ -329,8 +364,11 @@ def get_digital_me_summary(user_id: Optional[str] = None) -> dict:
     Returns:
         dict with profile summary
     """
+    _trace("get_digital_me_summary start")
     from kk_utils.digital_me.service import get_digital_me_summary_service
-    return get_digital_me_summary_service()
+    result = get_digital_me_summary_service()
+    _trace("get_digital_me_summary done")
+    return result
 
 
 # Auto-register tools when module is imported

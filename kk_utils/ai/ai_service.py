@@ -32,6 +32,7 @@ from opentelemetry import context
 from pydantic import BaseModel, Field
 
 from openai import AsyncOpenAI
+from kk_utils.execution_trace import reset_trace_context, set_trace_context
 
 try:
     from agents import Agent as SDKAgent
@@ -495,6 +496,7 @@ class AIService:
         if trace_callback:
             trace_callback(f"{trace_prefix} calling LLM")
 
+        trace_tokens = set_trace_context(trace_callback, trace_prefix)
         try:
             last_text_response = ""
             # call_id → tool_name mapping so output events know which tool produced them
@@ -586,6 +588,8 @@ class AIService:
         except Exception as e:
             logger.error(f"chat_with_tools failed: {e}", exc_info=True)
             return "I encountered an error. Please try again."
+        finally:
+            reset_trace_context(trace_tokens)
 
     async def generate_structured(
         self,
