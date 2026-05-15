@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable
 from opentelemetry import context
 
+import httpx
 from pydantic import BaseModel, Field
 
 from openai import AsyncOpenAI
@@ -49,6 +50,8 @@ except ImportError:
     FunctionTool = None
 
 logger = logging.getLogger(__name__)
+
+MODEL_SDK_TIMEOUT_SECONDS = 600
 
 
 # =============================================================================
@@ -194,12 +197,21 @@ class AIService:
             elif self.provider == "ollama":
                 self.base_url = os.environ.get("OLLAMA_API_URL", "http://localhost:11434/v1")
             
-        client_kwargs: Dict[str, Any] = {"api_key": self.api_key}
+        client_kwargs: Dict[str, Any] = {
+            "api_key": self.api_key,
+            "timeout": httpx.Timeout(MODEL_SDK_TIMEOUT_SECONDS),
+        }
         if self.base_url:
             client_kwargs["base_url"] = self.base_url
 
         self.client = AsyncOpenAI(**client_kwargs)
-        logger.info(f"AIService initialized: {api_model} (provider={self.provider}) base_url={self.base_url or '(default)'}")
+        logger.info(
+            "AIService initialized: %s (provider=%s) base_url=%s timeout=%ss",
+            api_model,
+            self.provider,
+            self.base_url or "(default)",
+            MODEL_SDK_TIMEOUT_SECONDS,
+        )
 
         self._prompts = self._load_prompts()
 
