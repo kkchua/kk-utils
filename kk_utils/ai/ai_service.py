@@ -876,9 +876,11 @@ class AIService:
             name="VisionAgent",
             instructions=system_prompt,
             model=sdk_model,
-            model_settings=ModelSettings(
-                extra_body={"response_format": {"type": "json_object"}}
-            ) if (ModelSettings and use_json_format) else None,
+            model_settings=(
+                ModelSettings(extra_body={"response_format": {"type": "json_object"}})
+                if (ModelSettings and use_json_format)
+                else ModelSettings()
+            ) if ModelSettings else None,
         )
 
         # Responses API input format — required by the Agents SDK converter
@@ -966,9 +968,11 @@ class AIService:
             name="JsonGenerationAgent",
             instructions=system_prompt,
             model=sdk_model,
-            model_settings=ModelSettings(
-                extra_body={"response_format": {"type": "json_object"}}
-            ) if (ModelSettings and use_json_format) else None,
+            model_settings=(
+                ModelSettings(extra_body={"response_format": {"type": "json_object"}})
+                if (ModelSettings and use_json_format)
+                else ModelSettings()
+            ) if ModelSettings else None,
         )
 
         user_messages = [{"role": "user", "content": user_text}]
