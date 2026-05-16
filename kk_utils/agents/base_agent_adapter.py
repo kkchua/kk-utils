@@ -41,6 +41,10 @@ from .agent_response import AgentResponse
 from ..persona_config import PersonaConfig
 
 
+def _safe_error_message(prefix: str) -> str:
+    return prefix
+
+
 class BaseAgentAdapter(ABC):
     """
     Abstract base class for all agent adapters.
@@ -157,7 +161,7 @@ class BaseAgentAdapter(ABC):
                 persona_name=persona.name if persona else "agent",
                 collection=persona.collection if persona else "agent",
                 tools_available=len(tools),
-                error=f"chat_failed: {str(e)}",
+                error=_safe_error_message("chat_failed"),
                 success=False,
             )
     
