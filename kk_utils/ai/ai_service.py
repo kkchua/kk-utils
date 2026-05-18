@@ -1150,14 +1150,16 @@ class AIService:
 
         last_text_response = ""
         for _turn in range(max_iterations):
-            response = await self._anthropic_messages_create(
+            anthropic_kwargs = dict(
                 model=self.model,
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
                 system=effective_system,
-                tools=anthropic_tools or None,
                 messages=messages,
             )
+            if anthropic_tools:
+                anthropic_kwargs["tools"] = anthropic_tools
+            response = await self._anthropic_messages_create(**anthropic_kwargs)
 
             if getattr(response, "content", None):
                 text_parts: List[str] = []
