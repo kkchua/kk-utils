@@ -357,7 +357,14 @@ class AIService:
                 text = self._content_block_text(block)
                 if text:
                     pieces.append(text)
-        return "\n".join(pieces).strip()
+        raw = "\n".join(pieces).strip()
+        # Strip markdown code fences — models often ignore "no fences" instructions
+        if raw.startswith("```"):
+            first_brace = raw.find("{")
+            last_brace = raw.rfind("}")
+            if first_brace != -1 and last_brace > first_brace:
+                raw = raw[first_brace : last_brace + 1]
+        return raw
 
     @staticmethod
     def _anthropic_usage(response: Any) -> SimpleNamespace:
