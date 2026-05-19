@@ -61,6 +61,7 @@ from kk_utils.factory import AgentMeFactory, AgentConfig
 
 # Skill Manifest
 from kk_utils.skill_manifest import SkillManifest, get_skill_manifest, discover_skills
+from kk_utils.llm_prompt_loader import load_llm_prompt
 
 # AI Service (multi-provider, OpenAI Agents SDK) — lazy import, requires openai package
 try:
@@ -143,4 +144,7 @@ __all__ = [
     "SkillManifest",
     "get_skill_manifest",
     "discover_skills",
+
+    # Prompt loader
+    "load_llm_prompt",
 ]

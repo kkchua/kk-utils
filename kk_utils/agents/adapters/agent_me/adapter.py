@@ -6,14 +6,13 @@ Use for personas that represent a specific person (e.g., Keng Koon).
 
 Skills:
 - digital_me: Personal knowledge base
-- notes: Note management
-- web_search: Web research
+- Optional persona skills may add notes/web_search or other capabilities
 
 Usage:
     from kk_utils.agents.adapters import AgentMeAdapter
     
     adapter = AgentMeAdapter()
-    skills = adapter.get_skills()  # ["digital_me", "notes", "web_search"]
+    skills = adapter.get_skills()  # ["digital_me"]
     tools = adapter._load_tools_from_registry(adapter.get_skill_tags())
     response = await adapter.execute_chat(messages, tools, model)
 """
@@ -31,6 +30,10 @@ logger = logging.getLogger(__name__)
 
 _ADAPTER_DIR = Path(__file__).parent
 
+# Import AgentMe tools for side effects so the digital_me baseline registers
+# itself into the shared AgentRegistry before tool selection runs.
+from . import tools as _agent_me_tools  # noqa: F401
+
 
 class AgentMeAdapter(BaseAgentAdapter):
     """
@@ -38,9 +41,8 @@ class AgentMeAdapter(BaseAgentAdapter):
     
     This adapter provides:
     - Access to personal knowledge base (digital_me)
-    - Note management capabilities
-    - Web search functionality
     - Professional, first-person voice
+    - Additional persona skills may extend the baseline
     """
     
     adapter_name = "agent_me"
@@ -48,8 +50,8 @@ class AgentMeAdapter(BaseAgentAdapter):
     
     # Default skills for AgentMe
     # Can be overridden by persona config
-    DEFAULT_SKILLS = ["digital_me", "notes", "web_search"]
-    DEFAULT_SKILL_TAGS = ["digital_me", "notes", "web_search"]
+    DEFAULT_SKILLS = ["digital_me"]
+    DEFAULT_SKILL_TAGS = ["digital_me"]
     
     def get_skills(self) -> List[str]:
         """
@@ -82,4 +84,3 @@ class AgentMeAdapter(BaseAgentAdapter):
     def get_tools_config(self, persona: Optional[PersonaConfig]) -> Optional[Dict[str, Any]]:
         """Load tools config from schema."""
         return super().get_tools_config(persona)
-

@@ -1,0 +1,89 @@
+{
+  "type": "object",
+  "required": [
+    "image_filename",
+    "image_stem",
+    "items"
+  ],
+  "_artifact": {
+    "output_type": "image_desc",
+    "output_data_key": "descriptions",
+    "output_var_name": "extracted_desc"
+  },
+  "properties": {
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "subject",
+          "mood",
+          "composition",
+          "lighting",
+          "style",
+          "color_palette",
+          "animatable_elements"
+        ],
+        "properties": {
+          "mood": {
+            "type": "string",
+            "description": "Emotional tone, atmosphere, cinematic feeling"
+          },
+          "style": {
+            "type": "string",
+            "description": "Artistic style, texture, rendering approach"
+          },
+          "subject": {
+            "type": "string",
+            "description": "Main visual elements, focal points, recognizable identity"
+          },
+          "lighting": {
+            "type": "string",
+            "description": "Quality, direction, color temperature, atmospheric illumination"
+          },
+          "composition": {
+            "type": "string",
+            "description": "Framing, depth layers, spatial arrangement, vertical flow"
+          },
+          "color_palette": {
+            "type": "string",
+            "description": "Dominant and accent colors with emotional associations"
+          },
+          "animatable_elements": {
+            "type": "string",
+            "description": "5–8 elements that could move naturally in video"
+          }
+        },
+        "additionalProperties": false
+      },
+      "maxItems": 1,
+      "minItems": 1
+    },
+    "image_stem": {
+      "type": "string"
+    },
+    "image_filename": {
+      "type": "string"
+    }
+  },
+  "description": "Structured visual description extraction from a single image",
+  "_array_field": "items",
+  "_input_schema": {
+    "fields": [
+      {
+        "name": "images",
+        "type": "file",
+        "label": "Upload Images",
+        "accept": "image/*",
+        "multiple": true,
+        "required": true
+      }
+    ],
+    "submit_label": "Extract Descriptions",
+    "hide_text_input": true
+  },
+  "_display_field": "subject",
+  "_filename_field": "image_stem",
+  "_validation_rules": {},
+  "additionalProperties": false
+}

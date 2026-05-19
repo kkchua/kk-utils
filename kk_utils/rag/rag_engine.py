@@ -15,6 +15,7 @@ import hashlib
 from pathlib import Path
 
 from kk_utils.rag.config import RAGConfig, get_rag_config
+from kk_utils.execution_trace import emit_trace
 
 logger = logging.getLogger(__name__)
 
@@ -257,6 +258,7 @@ class RAGEngine:
         start_time = time.time()
         
         if not self.collection:
+            emit_trace(f"RAG[{self.collection_name}]: unavailable")
             return RAGResult(
                 query=question,
                 chunks=[],
@@ -276,6 +278,13 @@ class RAGEngine:
         top_k = min(top_k, self.config.retrieval.max_top_k)
         
         try:
+            emit_trace(
+                f"RAG[{self.collection_name}]: query start "
+                f"top_k={top_k} min_confidence={min_confidence:.2f} "
+                f"filter={filter_metadata or {}} "
+                f"question={question[:80]!r}"
+            )
+
             # Log query details
             if self.config.logging.log_queries:
                 logger.info(f"RAG query: question='{question[:50]}...', top_k={top_k}, "
@@ -304,6 +313,7 @@ class RAGEngine:
             # Handle empty results
             if not results.get("documents") or not results["documents"][0]:
                 logger.warning(f"RAG query returned no results for: {question[:50]}")
+                emit_trace(f"RAG[{self.collection_name}]: no results")
                 return RAGResult(
                     query=question,
                     chunks=[],
@@ -334,6 +344,10 @@ class RAGEngine:
             # Check minimum confidence
             if confidence < min_confidence:
                 logger.info(f"Low confidence: {confidence:.3f} < {min_confidence:.2f}")
+                emit_trace(
+                    f"RAG[{self.collection_name}]: low confidence "
+                    f"{confidence:.3f} < {min_confidence:.2f}"
+                )
                 return RAGResult(
                     query=question,
                     chunks=[],
@@ -383,7 +397,13 @@ class RAGEngine:
             if self.config.logging.log_performance:
                 logger.info(f"RAG query performance: {retrieval_time_ms:.2f}ms, "
                            f"chunks_searched={self.collection.count()}, retrieved={len(chunks)}")
-            
+
+            emit_trace(
+                f"RAG[{self.collection_name}]: query done "
+                f"confidence={confidence:.3f} chunks={len(chunks)} "
+                f"time_ms={retrieval_time_ms:.0f}"
+            )
+
             # Build response
             result = RAGResult(
                 query=question,
@@ -413,6 +433,7 @@ class RAGEngine:
             
         except Exception as e:
             logger.error(f"RAG query failed: {e}", exc_info=True)
+            emit_trace(f"RAG[{self.collection_name}]: error {e}")
             return RAGResult(
                 query=question,
                 chunks=[],
