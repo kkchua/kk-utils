@@ -63,6 +63,7 @@ class MasterAgent:
         personas_config_path: Optional[str] = None,
         auto_register_adapters: bool = True,
         auto_register_handlers: bool = True,
+        allow_persona_yaml_fallback: bool = True,
     ):
         """
         Initialize Master Agent.
@@ -73,6 +74,7 @@ class MasterAgent:
             auto_register_handlers: If True, auto-register skill handlers
         """
         self.personas_config_path = Path(personas_config_path) if personas_config_path else None
+        self.allow_persona_yaml_fallback = allow_persona_yaml_fallback
         self.adapter_registry = AgentRegistry.instance()
         
         # Initialize skill handler registry
@@ -181,6 +183,7 @@ class MasterAgent:
             persona_name,
             config_path=self.personas_config_path,
             db_session=db_session,
+            allow_yaml_fallback=self.allow_persona_yaml_fallback,
         )
         if persona is None:
             raise ValueError(f"Persona '{persona_name}' not found")
@@ -307,23 +310,50 @@ class MasterAgent:
         # 3. Load schema config (optional)
         schema_config = adapter.get_tools_config(persona) or {}
 
-        # 4. Determine final skill_tags - Priority: UI skill_tags > persona config > adapter default
+        def _merge_unique(*value_groups):
+            merged: List[str] = []
+            seen: set[str] = set()
+            for values in value_groups:
+                if not values:
+                    continue
+                for value in values:
+                    if value is None or value in seen:
+                        continue
+                    seen.add(value)
+                    merged.append(value)
+            return merged
+
+        # 4. Determine final skills/tags.
+        # Adapter defaults are the baseline; persona config and UI additions are additive.
         if skill_tags is not None:
             # UI explicitly selected skills (or explicitly selected none)
             logger.info(f"MasterAgent: Using UI-provided skill_tags={skill_tags}")
-            skills = []  # Skills not needed when we have explicit tags
-            final_skill_tags = skill_tags
+            if not skill_tags or "none" in skill_tags or "no_tools" in skill_tags:
+                skills = []
+                final_skill_tags = skill_tags
+            else:
+                skills = _merge_unique(
+                    adapter.get_skills(),
+                    schema_config.get("skills"),
+                    persona.skills,
+                )
+                final_skill_tags = _merge_unique(
+                    adapter.get_skill_tags(),
+                    schema_config.get("skill_tags"),
+                    persona.skill_tags,
+                    skill_tags,
+                )
         else:
             # Use persona config defaults
-            skills = (
-                schema_config.get("skills")
-                if schema_config.get("skills") is not None
-                else (persona.skills if persona.skills is not None else adapter.get_skills())
+            skills = _merge_unique(
+                adapter.get_skills(),
+                schema_config.get("skills"),
+                persona.skills,
             )
-            final_skill_tags = (
-                schema_config.get("skill_tags")
-                if schema_config.get("skill_tags") is not None
-                else (persona.skill_tags if persona.skill_tags is not None else adapter.get_skill_tags())
+            final_skill_tags = _merge_unique(
+                adapter.get_skill_tags(),
+                schema_config.get("skill_tags"),
+                persona.skill_tags,
             )
             logger.info(f"MasterAgent: Using persona defaults skills={skills}, skill_tags={final_skill_tags}")
 

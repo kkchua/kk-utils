@@ -2,8 +2,11 @@
   "permissions": {
     "allow": [
       "Read(//home/kengkoon/projects/agent-runner-v2/**)",
-      "Bash(.venv/bin/python *)"
+      "Bash(.venv/bin/python *)",
+      "Bash(mkdir *)",
+      "Bash(/home/kengkoon/projects/kk-utils/.venv/bin/python *)",
+      "Bash(/home/kengkoon/projects/kk-utils/.venv/bin/pip *)"
     ]
   },
-  "$version": 3
+  "$version": 4
 }

@@ -1,0 +1,35 @@
+ Analyze the provided image and produce a structured visual description covering its core subject, mood, composition, lighting, style, color palette, and
+  animatable elements.
+
+  ================================================================================
+  DESCRIPTION FORMAT (MANDATORY)
+  ================================================================================
+
+  Return a JSON object with EXACTLY these top-level keys:
+  - image_filename: original filename (e.g., "photo1.png")
+  - image_stem: filename without extension (e.g., "photo1")
+  - items: array containing exactly ONE description object with these keys:
+    - subject: detailed description of main visual elements, focal points, and recognizable identity
+    - mood: emotional tone, atmosphere, and cinematic feeling
+    - composition: framing, depth layers (foreground/midground/background), spatial arrangement, and vertical flow considerations
+    - lighting: quality, direction, color temperature, and atmospheric illumination
+    - style: artistic style, texture, rendering approach, and visual treatment
+    - color_palette: dominant and accent colors with their emotional associations
+    - animatable_elements: objects or effects that could move in video (e.g., hair swaying, fabric drifting, mist rolling, gentle blinking, soft light
+  shifts, foliage movement)
+
+  ================================================================================
+  ANALYSIS GUIDELINES
+  ================================================================================
+
+  - Be specific and vivid — avoid generic descriptions like "a person standing"
+  - Capture the unique visual identity that makes this image distinct
+  - Note any vertical/portrait composition characteristics (headroom, negative space, full-height framing)
+  - Identify parallax potential: distinct foreground/midground/background layers at different depths
+  - List 5–8 specific animatable elements that would work naturally with the scene
+
+  ================================================================================
+  ABSOLUTE OUTPUT RULE (NON-NEGOTIABLE)
+  ================================================================================
+
+  Return ONLY valid JSON. No explanation. No markdown. No fences.

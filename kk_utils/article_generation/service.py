@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.logging_config import get_logger
+from kk_utils.execution_trace import emit_trace
 
 logger = get_logger(__name__)
 
@@ -107,14 +108,17 @@ class ArticleGenerationService:
         from app.services.web_search_service import get_web_search_service
 
         start_time = time.time()
+        emit_trace(f"article_generation start topic={topic!r} tone={tone!r} num_search_results={num_search_results}")
 
         # ── Step 1: Web search for research context ──────────────────────────
         search_service = get_web_search_service()
+        emit_trace(f"article_generation web_search start topic={topic!r}")
         search_results = await search_service.search(
             query=topic,
             max_results=num_search_results,
             search_depth="basic",
         )
+        emit_trace(f"article_generation web_search done results={len(search_results.results)}")
 
         research_context = self._build_research_context(search_results.results)
         logger.info(f"Research: {len(search_results.results)} results for '{topic}'")
@@ -131,11 +135,13 @@ class ArticleGenerationService:
         # ── Step 3: Generate article via AIService ────────────────────────────
         from app.services.ai_service import get_ai_service
         ai_service = get_ai_service()
+        emit_trace(f"article_generation llm start model={ai_service.api_model!r}")
         article = await ai_service.generate_structured(
             prompt=user_prompt,
             system_prompt=ARTICLE_SYSTEM_PROMPT,
             output_type=GeneratedArticle,
         )
+        emit_trace("article_generation llm done")
 
         # ── Step 4: Ensure unique slug ────────────────────────────────────────
         slug = self._unique_slug(article.slug, topic, db_session)
@@ -161,6 +167,7 @@ class ArticleGenerationService:
         db_session.add(post)
         db_session.commit()
         db_session.refresh(post)
+        emit_trace(f"article_generation save done post_id={post.id}")
 
         logger.info(f"Article generated and saved: '{post.title}' (slug: {slug})")
 

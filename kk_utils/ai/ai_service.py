@@ -8,7 +8,7 @@ Supported providers:
 - openai: Official OpenAI or OpenAI-compatible endpoints
 - qwen/dashscope: Alibaba DashScope (Qwen models)
 - ollama: Local Ollama models
-- anthropic: Anthropic Claude (via OpenAI-compatible endpoint)
+- anthropic: Anthropic Claude (native Messages API / SDK)
 - mock: Mock client for testing
 
 Usage:
@@ -26,12 +26,22 @@ from multiprocessing import context
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Optional, List, Dict, Any, Callable
 from opentelemetry import context
 
+import httpx
 from pydantic import BaseModel, Field
 
 from openai import AsyncOpenAI
+from kk_utils.execution_trace import reset_trace_context, set_trace_context
+
+try:
+    from anthropic import AsyncAnthropic
+    ANTHROPIC_SDK_AVAILABLE = True
+except ImportError:
+    AsyncAnthropic = None
+    ANTHROPIC_SDK_AVAILABLE = False
 
 try:
     from agents import Agent as SDKAgent
@@ -48,6 +58,9 @@ except ImportError:
     FunctionTool = None
 
 logger = logging.getLogger(__name__)
+
+MODEL_SDK_TIMEOUT_SECONDS = 600
+_ANTHROPIC_RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504}
 
 
 # =============================================================================
@@ -142,6 +155,7 @@ class AIService:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.enable_output_schema = enable_output_schema
+        self.anthropic_client = None
 
         # Parse provider/model format
         if "/" in api_model:
@@ -186,19 +200,48 @@ class AIService:
         if not self.base_url:
             if self.provider in ("qwen", "dashscope"):
                 self.base_url = os.environ.get("DASHSCOPE_API_URL", "https://coding-intl.dashscope.aliyuncs.com/v1")
-            if self.provider in ("anthropic"):
-                self.base_url = os.environ.get("ANTHROPIC_API_URL", "https://api.anthropic.com/v1")
+            if self.provider == "anthropic":
+                self.base_url = os.environ.get("ANTHROPIC_API_URL", "https://api.anthropic.com")
             if self.provider in ("deepseek"):
                 self.base_url = os.environ.get("DEEPSEEK_API_URL", "https://api.deepseek.com")
             elif self.provider == "ollama":
                 self.base_url = os.environ.get("OLLAMA_API_URL", "http://localhost:11434/v1")
-            
-        client_kwargs: Dict[str, Any] = {"api_key": self.api_key}
-        if self.base_url:
-            client_kwargs["base_url"] = self.base_url
 
-        self.client = AsyncOpenAI(**client_kwargs)
-        logger.info(f"AIService initialized: {api_model} (provider={self.provider}) base_url={self.base_url or '(default)'}")
+        if self.provider == "anthropic" and self.base_url:
+            normalized_base_url = self.base_url.rstrip("/")
+            if normalized_base_url.endswith("/v1"):
+                normalized_base_url = normalized_base_url[:-3]
+            self.base_url = normalized_base_url
+
+        if self.provider == "anthropic":
+            if not ANTHROPIC_SDK_AVAILABLE:
+                raise ImportError(
+                    "anthropic package is required for Anthropic provider. "
+                    "Install the 'anthropic' dependency before using anthropic/* models."
+                )
+            self.anthropic_client = AsyncAnthropic(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                timeout=httpx.Timeout(MODEL_SDK_TIMEOUT_SECONDS),
+            )
+            self.client = None
+        else:
+            client_kwargs: Dict[str, Any] = {
+                "api_key": self.api_key,
+                "timeout": httpx.Timeout(MODEL_SDK_TIMEOUT_SECONDS),
+            }
+            if self.base_url:
+                client_kwargs["base_url"] = self.base_url
+
+            self.client = AsyncOpenAI(**client_kwargs)
+
+        logger.info(
+            "AIService initialized: %s (provider=%s) base_url=%s timeout=%ss",
+            api_model,
+            self.provider,
+            self.base_url or "(default)",
+            MODEL_SDK_TIMEOUT_SECONDS,
+        )
 
         self._prompts = self._load_prompts()
 
@@ -291,6 +334,159 @@ class AIService:
         )
         return {"response": result.response}
 
+    def _is_anthropic_provider(self) -> bool:
+        return self.provider == "anthropic"
+
+    @staticmethod
+    def _content_block_text(block: Any) -> str:
+        if isinstance(block, dict):
+            return str(block.get("text") or "")
+        return str(getattr(block, "text", "") or "")
+
+    @staticmethod
+    def _content_block_type(block: Any) -> str:
+        if isinstance(block, dict):
+            return str(block.get("type") or "")
+        return str(getattr(block, "type", "") or "")
+
+    def _extract_anthropic_text(self, response: Any) -> str:
+        content = getattr(response, "content", None) or []
+        pieces: List[str] = []
+        for block in content:
+            if self._content_block_type(block) == "text":
+                text = self._content_block_text(block)
+                if text:
+                    pieces.append(text)
+        raw = "\n".join(pieces).strip()
+        # Strip markdown code fences — models often ignore "no fences" instructions
+        if raw.startswith("```"):
+            first_brace = raw.find("{")
+            last_brace = raw.rfind("}")
+            if first_brace != -1 and last_brace > first_brace:
+                raw = raw[first_brace : last_brace + 1]
+        return raw
+
+    @staticmethod
+    def _anthropic_usage(response: Any) -> SimpleNamespace:
+        usage = getattr(response, "usage", None)
+        return SimpleNamespace(
+            input_tokens=getattr(usage, "input_tokens", 0) if usage else 0,
+            output_tokens=getattr(usage, "output_tokens", 0) if usage else 0,
+            prompt_tokens=getattr(usage, "input_tokens", 0) if usage else 0,
+            completion_tokens=getattr(usage, "output_tokens", 0) if usage else 0,
+        )
+
+    @staticmethod
+    def _json_only_instruction(output_type: type[BaseModel]) -> str:
+        schema = {}
+        try:
+            schema = output_type.model_json_schema()
+        except Exception:
+            schema = {}
+
+        return (
+            "Return ONLY valid JSON with no markdown fences or commentary. "
+            "The JSON must conform to this schema:\n"
+            f"{json.dumps(schema, ensure_ascii=False, indent=2)}"
+        )
+
+    @staticmethod
+    def _anthropic_text_message(text: str) -> List[Dict[str, str]]:
+        return [{"type": "text", "text": text}]
+
+    @staticmethod
+    def _anthropic_image_message(image_b64: str, image_mime: str) -> List[Dict[str, Any]]:
+        return [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": image_mime,
+                    "data": image_b64,
+                },
+            }
+        ]
+
+    @staticmethod
+    def _anthropic_tools_from_openai(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        anthropic_tools: List[Dict[str, Any]] = []
+        for tool_def in tools or []:
+            fn_def = tool_def.get("function", {})
+            tool_name = fn_def.get("name")
+            if not tool_name:
+                continue
+            anthropic_tools.append(
+                {
+                    "name": tool_name,
+                    "description": fn_def.get("description", ""),
+                    "input_schema": fn_def.get("parameters", {"type": "object", "properties": {}}),
+                }
+            )
+        return anthropic_tools
+
+    @staticmethod
+    def _anthropic_block_value(block: Any, key: str, default: Any = None) -> Any:
+        if isinstance(block, dict):
+            return block.get(key, default)
+        return getattr(block, key, default)
+
+    @staticmethod
+    def _anthropic_block_to_dict(block: Any) -> Dict[str, Any]:
+        block_type = block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
+        if block_type == "text":
+            return {
+                "type": "text",
+                "text": block.get("text") if isinstance(block, dict) else getattr(block, "text", ""),
+            }
+        if block_type == "tool_use":
+            return {
+                "type": "tool_use",
+                "id": block.get("id") if isinstance(block, dict) else getattr(block, "id", ""),
+                "name": block.get("name") if isinstance(block, dict) else getattr(block, "name", ""),
+                "input": block.get("input") if isinstance(block, dict) else getattr(block, "input", {}),
+            }
+        if isinstance(block, dict):
+            return dict(block)
+        return {"type": str(block_type or "text"), "text": str(block)}
+
+    @staticmethod
+    def _anthropic_error_status(exc: Exception) -> Optional[int]:
+        status = getattr(exc, "status_code", None)
+        if isinstance(status, int):
+            return status
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None)
+        return status if isinstance(status, int) else None
+
+    async def _anthropic_messages_create(self, **kwargs):
+        """Call Anthropic with a small retry window for transient 5xx/429 failures."""
+        import asyncio
+
+        last_error: Optional[Exception] = None
+        attempts = 3
+        for attempt in range(1, attempts + 1):
+            try:
+                return await self.anthropic_client.messages.create(**kwargs)
+            except Exception as exc:
+                last_error = exc
+                status = self._anthropic_error_status(exc)
+                retryable = status in _ANTHROPIC_RETRYABLE_STATUS if status is not None else False
+                if attempt >= attempts or not retryable:
+                    raise
+                delay = 0.8 * attempt
+                logger.warning(
+                    "Anthropic request failed (attempt %d/%d, status=%s); retrying in %.1fs: %s",
+                    attempt,
+                    attempts,
+                    status if status is not None else "unknown",
+                    delay,
+                    exc,
+                )
+                await asyncio.sleep(delay)
+        if last_error:
+            raise last_error
+        raise RuntimeError("Anthropic request failed without an exception")
+
 
     def _build_sdk_tools(
         self,
@@ -298,6 +494,7 @@ class AIService:
         dedup_cache: Dict,
         trace_callback=None,
         trace_prefix: str = "Agent:",
+        persona_collection: Optional[str] = None,
     ) -> List:
         """Convert AgentRegistry OpenAI-format dicts into SDK FunctionTool objects.
 
@@ -323,7 +520,15 @@ class AIService:
             description = fn_def.get("description", "")
             params_schema = fn_def.get("parameters", {"type": "object", "properties": {}})
 
-            async def on_invoke(ctx, args_json, _name=tool_name, _trace=trace_callback, _prefix=trace_prefix):
+            async def on_invoke(
+                ctx,
+                args_json,
+                _name=tool_name,
+                _trace=trace_callback,
+                _prefix=trace_prefix,
+                _persona_collection=persona_collection,
+                _tool_def=tool_def,
+            ):
                 try:
                     tool_args = _json.loads(args_json) if args_json else {}
                 except Exception:
@@ -333,6 +538,14 @@ class AIService:
                 _null_vals = {"null", "NULL", "None", "none"}
                 tool_args = {k: (None if isinstance(v, str) and v in _null_vals else v) for k, v in tool_args.items()}
                 tool_args = {k: v for k, v in tool_args.items() if v is not None}
+                if _persona_collection:
+                    function_ref = _tool_def.get("function_ref")
+                    tool_tags = list(getattr(function_ref, "__agent_tool__", {}).get("tags", [])) if function_ref else []
+                    if "digital_me" in tool_tags:
+                        # Use explicit override: LLM sometimes sends persona_collection=""
+                        # and setdefault() won't replace an existing empty string.
+                        if not tool_args.get("persona_collection"):
+                            tool_args["persona_collection"] = _persona_collection
 
                 logger.debug(f"Tool call: {_name}({tool_args})")
                 result = registry.execute(_name, **tool_args)
@@ -424,6 +637,7 @@ class AIService:
         max_plan_steps: int = 8,
         trace_callback: Optional[Callable[[str], None]] = None,
         agent_name: Optional[str] = None,  # For trace name customization
+        persona_collection: Optional[str] = None,
     ) -> str:
         """
         Chat with tool calling via OpenAI Agents SDK.
@@ -445,6 +659,21 @@ class AIService:
         Returns:
             Final text response from the LLM.
         """
+        if self._is_anthropic_provider():
+            return await self._chat_with_tools_anthropic(
+                message=message,
+                tools=tools,
+                system_prompt=system_prompt,
+                conversation_history=conversation_history,
+                context=context,
+                max_iterations=max_iterations,
+                progress_callback=progress_callback,
+                max_plan_steps=max_plan_steps,
+                trace_callback=trace_callback,
+                agent_name=agent_name,
+                persona_collection=persona_collection,
+            )
+
         if not self.client or self.provider == "mock":
             logger.warning("chat_with_tools: AI in mock mode")
             return "[Mock] Configure API_MODEL for real AI responses."
@@ -478,7 +707,13 @@ class AIService:
         dedup_cache: Dict[str, Any] = {}
         # Build trace prefix from agent_name (e.g., "Keng Koon:" or "AI Assistant:")
         trace_prefix = f"{agent_name}:" if agent_name else "Agent:"
-        sdk_tools = self._build_sdk_tools(tools or [], dedup_cache, trace_callback=trace_callback, trace_prefix=trace_prefix)
+        sdk_tools = self._build_sdk_tools(
+            tools or [],
+            dedup_cache,
+            trace_callback=trace_callback,
+            trace_prefix=trace_prefix,
+            persona_collection=persona_collection,
+        )
         if progress_callback is not None:
             sdk_tools.insert(0, self._build_progress_tool(progress_callback, max_plan_steps))
 
@@ -495,6 +730,7 @@ class AIService:
         if trace_callback:
             trace_callback(f"{trace_prefix} calling LLM")
 
+        trace_tokens = set_trace_context(trace_callback, trace_prefix)
         try:
             last_text_response = ""
             # call_id → tool_name mapping so output events know which tool produced them
@@ -586,6 +822,8 @@ class AIService:
         except Exception as e:
             logger.error(f"chat_with_tools failed: {e}", exc_info=True)
             return "I encountered an error. Please try again."
+        finally:
+            reset_trace_context(trace_tokens)
 
     async def generate_structured(
         self,
@@ -731,6 +969,308 @@ class AIService:
     # Core AI Client
     # -------------------------------------------------------------------------
 
+    async def _call_ai_anthropic(
+        self,
+        system_prompt: str,
+        user_text: str,
+        output_type: type[BaseModel],
+        context: Optional[CallContext] = None,
+    ) -> BaseModel:
+        """Call Claude via Anthropic's native Messages API."""
+        if not self.anthropic_client:
+            logger.warning("Anthropic client not initialized - using mock response")
+            return self._mock_response(output_type)
+
+        instruction = self._json_only_instruction(output_type)
+        full_system = system_prompt.rstrip()
+        if full_system:
+            full_system += "\n\n"
+        full_system += instruction
+
+        response = await self._anthropic_messages_create(
+            model=self.model,
+            max_tokens=self.max_tokens,
+            temperature=self.temperature,
+            system=full_system,
+            messages=[
+                {
+                    "role": "user",
+                    "content": self._anthropic_text_message(user_text),
+                }
+            ],
+        )
+
+        raw_text = self._extract_anthropic_text(response)
+        usage = self._anthropic_usage(response)
+        self._on_usage(SimpleNamespace(usage=usage), context, output_type)
+
+        if not raw_text:
+            return self._mock_response(output_type)
+
+        try:
+            parsed = json.loads(raw_text)
+            if isinstance(parsed, dict):
+                return output_type.model_validate(parsed)
+        except Exception:
+            pass
+
+        if output_type == TextResult:
+            return TextResult(response=raw_text)
+
+        try:
+            return output_type.model_validate_json(raw_text)
+        except Exception:
+            try:
+                return output_type.model_validate({"response": raw_text})
+            except Exception:
+                logger.error("Anthropic JSON response could not be validated")
+                return self._mock_response(output_type)
+
+    async def _generate_anthropic_raw(
+        self,
+        system_prompt: str,
+        user_text: str,
+        *,
+        image_b64: Optional[str] = None,
+        image_mime: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if not self.anthropic_client:
+            raise RuntimeError(f"AIService not ready (provider={self.provider})")
+
+        content: List[Dict[str, Any]] = []
+        if image_b64 and image_mime:
+            content.extend(self._anthropic_image_message(image_b64, image_mime))
+        content.extend(self._anthropic_text_message(user_text))
+
+        response = await self._anthropic_messages_create(
+            model=self.model,
+            max_tokens=self.max_tokens,
+            temperature=self.temperature,
+            system=system_prompt,
+            messages=[{"role": "user", "content": content}],
+        )
+
+        raw_content = self._extract_anthropic_text(response)
+        usage = getattr(response, "usage", None)
+        prompt_tokens = getattr(usage, "input_tokens", 0) if usage else 0
+        completion_tokens = getattr(usage, "output_tokens", 0) if usage else 0
+        total_tokens = prompt_tokens + completion_tokens
+
+        return {
+            "raw_content": raw_content,
+            "finish_reason": getattr(response, "stop_reason", "stop") or "stop",
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "elapsed_ms": 0,
+            "api_model": self.model,
+            "base_url": self.base_url or "https://api.anthropic.com/v1",
+        }
+
+    async def _chat_with_tools_anthropic(
+        self,
+        message: str,
+        tools: List[Dict],
+        system_prompt: str,
+        conversation_history: Optional[List[Dict]] = None,
+        context: Optional[CallContext] = None,
+        max_iterations: int = 10,
+        progress_callback: Optional[Callable[[List[Dict]], None]] = None,
+        max_plan_steps: int = 8,
+        trace_callback: Optional[Callable[[str], None]] = None,
+        agent_name: Optional[str] = None,
+        persona_collection: Optional[str] = None,
+    ) -> str:
+        if not self.anthropic_client:
+            logger.warning("Anthropic client not initialized - using mock response")
+            return "[Mock] Configure API_MODEL for real AI responses."
+
+        effective_system = system_prompt
+        if progress_callback is not None:
+            effective_system = effective_system.rstrip() + (
+                "\n\nWORKFLOW:\n"
+                "1. Call report_progress ONCE with your full plan (all steps as pending).\n"
+                "2. Call the tools you need to gather information.\n"
+                "3. Give your final answer immediately after receiving tool results.\n"
+                "Do NOT call report_progress again after the tools. "
+                f"Keep your plan to {max_plan_steps} steps or fewer."
+            )
+
+        messages: List[Dict[str, Any]] = []
+        if conversation_history:
+            for item in conversation_history:
+                if not isinstance(item, dict):
+                    continue
+                role = item.get("role")
+                content = item.get("content")
+                if not role or content is None:
+                    continue
+                if isinstance(content, list):
+                    anthropic_content = content
+                else:
+                    anthropic_content = self._anthropic_text_message(str(content))
+                messages.append({"role": role, "content": anthropic_content})
+        messages.append({"role": "user", "content": self._anthropic_text_message(message)})
+
+        anthropic_tools = self._anthropic_tools_from_openai(tools or [])
+        if progress_callback is not None:
+            anthropic_tools.insert(
+                0,
+                {
+                    "name": "report_progress",
+                    "description": (
+                        "Report your current plan and progress. "
+                        "Call FIRST with all steps as pending to share your plan before doing any work. "
+                        "Then update individual steps to in_progress as you start them, "
+                        "and completed or failed when done. "
+                        "Keep plans concise and actionable."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "steps": {
+                                "type": "array",
+                                "description": "All plan steps with current status",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": {"type": "string"},
+                                        "content": {"type": "string"},
+                                        "status": {
+                                            "type": "string",
+                                            "enum": ["pending", "in_progress", "completed", "failed"],
+                                        },
+                                    },
+                                    "required": ["id", "content", "status"],
+                                },
+                            }
+                        },
+                        "required": ["steps"],
+                    },
+                },
+            )
+
+        import json as _json
+        from kk_utils.agent_tools import get_registry
+        registry = get_registry()
+
+        trace_prefix = f"{agent_name}:" if agent_name else "Agent:"
+        if trace_callback:
+            trace_callback(f"{trace_prefix} calling LLM")
+
+        last_text_response = ""
+        for _turn in range(max_iterations):
+            anthropic_kwargs = dict(
+                model=self.model,
+                max_tokens=self.max_tokens,
+                temperature=self.temperature,
+                system=effective_system,
+                messages=messages,
+            )
+            if anthropic_tools:
+                anthropic_kwargs["tools"] = anthropic_tools
+            response = await self._anthropic_messages_create(**anthropic_kwargs)
+
+            if getattr(response, "content", None):
+                text_parts: List[str] = []
+                tool_uses: List[Any] = []
+                for block in response.content:
+                    block_type = self._content_block_type(block)
+                    if block_type == "text":
+                        text = self._content_block_text(block)
+                        if text.strip():
+                            text_parts.append(text)
+                            last_text_response = text
+                    elif block_type == "tool_use":
+                        tool_uses.append(block)
+
+                if not tool_uses:
+                    usage = self._anthropic_usage(response)
+                    self._on_usage(SimpleNamespace(usage=usage), context, TextResult)
+                    if trace_callback:
+                        trace_callback(f"{trace_prefix} final response received")
+                    final = "\n".join(text_parts).strip() or last_text_response
+                    if final and final.strip().startswith('{"steps":'):
+                        logger.warning("chat_with_tools: discarding leaked plan-steps JSON as response")
+                        final = ""
+                    return final
+
+                tool_result_blocks: List[Dict[str, Any]] = []
+                for block in tool_uses:
+                    tool_name = self._anthropic_block_value(block, "name", "tool")
+                    tool_use_id = self._anthropic_block_value(block, "id", "")
+                    tool_input = self._anthropic_block_value(block, "input", {}) or {}
+                    if not isinstance(tool_input, dict):
+                        tool_input = {}
+
+                    if tool_name == "report_progress" and progress_callback is not None:
+                        steps = tool_input.get("steps", [])
+                        if not isinstance(steps, list):
+                            steps = []
+                        if len(steps) > max_plan_steps:
+                            logger.warning(
+                                f"report_progress: plan exceeds limit ({len(steps)} > {max_plan_steps})"
+                            )
+                            tool_result = {
+                                "error": f"Plan has {len(steps)} steps but limit is {max_plan_steps}. Consolidate your plan.",
+                                "max_allowed": max_plan_steps,
+                            }
+                        else:
+                            progress_callback(steps)
+                            tool_result = {"acknowledged": True, "steps_recorded": len(steps)}
+                    else:
+                        if trace_callback:
+                            args_str = ", ".join(
+                                f"{k}={v!r}" for k, v in tool_input.items() if v not in (None, "", [])
+                            )
+                            label = f"{tool_name}({args_str})" if args_str else tool_name
+                            trace_callback(f"{trace_prefix} executing {label}")
+                        result = registry.execute(tool_name, **tool_input)
+                        tool_result = result
+                        if isinstance(result, dict):
+                            if result.get("source") == "rag" and trace_callback:
+                                conf = result.get("confidence", 0.0)
+                                ms = result.get("retrieval_time_ms", 0.0)
+                                n = result.get("chunks_searched", 0)
+                                dist = result.get("avg_distance", 0.0)
+                                trace_callback(
+                                    f"{trace_prefix} {tool_name}: RAG confidence={conf:.3f} "
+                                    f"(avg_distance={dist:.3f}), {ms:.0f}ms, chunks_searched={n}"
+                                )
+                            elif result.get("available") is False and trace_callback:
+                                trace_callback(f"{trace_prefix} {tool_name}: no data in profile")
+
+                    if trace_callback:
+                        trace_callback(f"{trace_prefix} {tool_name}: done")
+
+                    tool_result_blocks.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tool_use_id,
+                            "content": _json.dumps(tool_result, ensure_ascii=False),
+                        }
+                    )
+
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": [self._anthropic_block_to_dict(block) for block in response.content],
+                    }
+                )
+                messages.append({"role": "user", "content": tool_result_blocks})
+                continue
+
+            usage = self._anthropic_usage(response)
+            self._on_usage(SimpleNamespace(usage=usage), context, TextResult)
+            final = last_text_response or ""
+            if final and final.strip().startswith('{"steps":'):
+                logger.warning("chat_with_tools: discarding leaked plan-steps JSON as response")
+                final = ""
+            return final
+
+        logger.warning("chat_with_tools: exceeded max_iterations without final answer")
+        return last_text_response or "I encountered an error. Please try again."
+
     async def _call_ai(
         self,
         system_prompt: str,
@@ -743,6 +1283,14 @@ class AIService:
 
         Falls back to mock response if client is unavailable or SDK is missing.
         """
+        if self._is_anthropic_provider():
+            return await self._call_ai_anthropic(
+                system_prompt=system_prompt,
+                user_text=user_text,
+                output_type=output_type,
+                context=context,
+            )
+
         if not self.client or self.provider == "mock":
             logger.warning(f"AI in mock mode (provider={self.provider})")
             return self._mock_response(output_type)
@@ -821,6 +1369,22 @@ class AIService:
         """
         import time
 
+        if self._is_anthropic_provider():
+            t0 = time.monotonic()
+            result = await self._generate_anthropic_raw(
+                system_prompt=system_prompt + "\n\nReturn ONLY valid JSON with no markdown fences or commentary.",
+                user_text=user_text,
+                image_b64=image_b64,
+                image_mime=image_mime,
+            )
+            result["elapsed_ms"] = int((time.monotonic() - t0) * 1000)
+            logger.info(
+                f"  [vision] done | provider={self.provider} model={self.model} | "
+                f"tokens={result['prompt_tokens']}+{result['completion_tokens']}={result['total_tokens']} | "
+                f"{result['elapsed_ms']}ms"
+            )
+            return result
+
         if not self.client or self.provider == "mock":
             raise RuntimeError(f"AIService not ready (provider={self.provider})")
 
@@ -839,9 +1403,11 @@ class AIService:
             name="VisionAgent",
             instructions=system_prompt,
             model=sdk_model,
-            model_settings=ModelSettings(
-                extra_body={"response_format": {"type": "json_object"}}
-            ) if (ModelSettings and use_json_format) else None,
+            model_settings=(
+                ModelSettings(extra_body={"response_format": {"type": "json_object"}})
+                if (ModelSettings and use_json_format)
+                else ModelSettings()
+            ) if ModelSettings else None,
         )
 
         # Responses API input format — required by the Agents SDK converter
@@ -913,6 +1479,20 @@ class AIService:
         """
         import time
 
+        if self._is_anthropic_provider():
+            t0 = time.monotonic()
+            result = await self._generate_anthropic_raw(
+                system_prompt=system_prompt + "\n\nReturn ONLY valid JSON with no markdown fences or commentary.",
+                user_text=user_text,
+            )
+            result["elapsed_ms"] = int((time.monotonic() - t0) * 1000)
+            logger.info(
+                f"  [json_gen] done | provider={self.provider} model={self.model} | "
+                f"tokens={result['prompt_tokens']}+{result['completion_tokens']}={result['total_tokens']} | "
+                f"{result['elapsed_ms']}ms"
+            )
+            return result
+
         if not self.client or self.provider == "mock":
             raise RuntimeError(f"AIService not ready (provider={self.provider})")
 
@@ -929,9 +1509,11 @@ class AIService:
             name="JsonGenerationAgent",
             instructions=system_prompt,
             model=sdk_model,
-            model_settings=ModelSettings(
-                extra_body={"response_format": {"type": "json_object"}}
-            ) if (ModelSettings and use_json_format) else None,
+            model_settings=(
+                ModelSettings(extra_body={"response_format": {"type": "json_object"}})
+                if (ModelSettings and use_json_format)
+                else ModelSettings()
+            ) if ModelSettings else None,
         )
 
         user_messages = [{"role": "user", "content": user_text}]

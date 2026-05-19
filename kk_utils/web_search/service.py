@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from app.core.config import get_settings
 from app.core.logging_config import get_logger
+from kk_utils.execution_trace import emit_trace
 
 logger = get_logger(__name__)
 
@@ -79,8 +80,10 @@ class WebSearchService:
         Returns:
             SearchResults with results list
         """
+        emit_trace(f"web_search_service start query={query!r} max_results={max_results} search_depth={search_depth!r}")
         if not self.settings.TAVILY_API_KEY:
             logger.warning("TAVILY_API_KEY not configured — returning empty search results")
+            emit_trace("web_search_service unavailable (missing TAVILY_API_KEY)")
             return SearchResults(
                 query=query,
                 success=False,
@@ -116,10 +119,12 @@ class WebSearchService:
 
             # Avoid non-ASCII characters in log message to prevent UnicodeEncodeError
             logger.info(f"Web search: '%s' -> %d results", query, len(results))
+            emit_trace(f"web_search_service done query={query!r} results={len(results)}")
             return SearchResults(results=results, total=len(results), query=query)
 
         except httpx.HTTPStatusError as e:
             logger.error(f"Tavily API HTTP error: {e.response.status_code} — {e.response.text}")
+            emit_trace(f"web_search_service error query={query!r}: HTTP {e.response.status_code}")
             return SearchResults(
                 query=query,
                 success=False,
@@ -127,6 +132,7 @@ class WebSearchService:
             )
         except Exception as e:
             logger.error(f"Web search failed: {e}")
+            emit_trace(f"web_search_service error query={query!r}: {e}")
             return SearchResults(query=query, success=False, error=str(e))
 
 

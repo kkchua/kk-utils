@@ -39,8 +39,8 @@ class PersonaConfig:
     name: str
     display_name: str
     collection: str       # ChromaDB collection name (also used for SL check)
-    skills: List[str]     # kk_agent_skills module names to import
-    skill_tags: List[str] # tool registry tags to include
+    skills: List[str]     # Persona-specific skills; adapter defaults are merged at runtime
+    skill_tags: List[str] # Persona-specific tool tags; adapter defaults are merged at runtime
     system_prompt: str
     # NEW: Adapter configuration (for Master Agent architecture)
     adapter_type: Optional[str] = None  # e.g., "agent_me", "ai_assistant"
@@ -127,18 +127,24 @@ def load_persona(
     persona_name: str,
     config_path: Optional[Path] = None,
     db_session=None,
+    allow_yaml_fallback: bool = True,
 ) -> Optional[PersonaConfig]:
     """
     Load a persona by name.
 
     Priority:
     1. PostgreSQL personas table when db_session is provided
-    2. personas.yaml fallback
+    2. personas.yaml fallback (only when allow_yaml_fallback=True)
+    
+    Note:
+    Adapter baseline skills/tags are merged later by MasterAgent. The stored
+    persona skills/tags are treated as additions.
 
     Args:
         persona_name: Persona key (e.g. "kengkoon", "test")
         config_path: Path to personas.yaml fallback (each app provides its own)
         db_session: Optional SQLAlchemy session for DB-backed personas.
+        allow_yaml_fallback: If False, do not fall back to personas.yaml.
 
     Returns:
         PersonaConfig or None if persona not found.
@@ -147,7 +153,12 @@ def load_persona(
     if db_persona is not None:
         return db_persona
 
-    if config_path is None:
+    if not allow_yaml_fallback or config_path is None:
+        if db_session is not None:
+            logger.warning(
+                "Persona '%s' not found in PostgreSQL personas; YAML fallback disabled",
+                persona_name,
+            )
         return None
 
     path = config_path
