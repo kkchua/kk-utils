@@ -213,7 +213,7 @@ def get_skills(
     return skills
 
 
-def get_education_service(
+def get_education(
     degree_level: Optional[str] = None,
     field_of_study: Optional[str] = None,
 ) -> List[Dict]:
@@ -243,7 +243,7 @@ def get_education_service(
     return education
 
 
-def get_projects_service(
+def get_projects(
     technology: Optional[str] = None,
     role: Optional[str] = None,
 ) -> List[Dict]:
@@ -266,7 +266,7 @@ def get_projects_service(
     return projects
 
 
-def get_certifications_service(
+def get_certifications(
     issuer: Optional[str] = None,
     include_expired: bool = False,
 ) -> List[Dict]:
@@ -302,7 +302,7 @@ def get_certifications_service(
     return certs
 
 
-def get_digital_me_summary_service() -> Dict[str, Any]:
+def get_digital_me_summary() -> Dict[str, Any]:
     """Get Digital Me summary."""
     data = _load_digital_me_data()
     

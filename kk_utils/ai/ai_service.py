@@ -542,7 +542,10 @@ class AIService:
                     function_ref = _tool_def.get("function_ref")
                     tool_tags = list(getattr(function_ref, "__agent_tool__", {}).get("tags", [])) if function_ref else []
                     if "digital_me" in tool_tags:
-                        tool_args.setdefault("persona_collection", _persona_collection)
+                        # Use explicit override: LLM sometimes sends persona_collection=""
+                        # and setdefault() won't replace an existing empty string.
+                        if not tool_args.get("persona_collection"):
+                            tool_args["persona_collection"] = _persona_collection
 
                 logger.debug(f"Tool call: {_name}({tool_args})")
                 result = registry.execute(_name, **tool_args)

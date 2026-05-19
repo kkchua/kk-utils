@@ -286,7 +286,7 @@ def get_education(
         return {"source": "rag", "confidence": rag_result["confidence"], "chunks": rag_result["chunks"]}
 
     # Fallback to structured data
-    from kk_utils.digital_me.service import get_education_service as get_edu_svc
+    from kk_utils.digital_me.service import get_education as get_edu_svc
     education = get_edu_svc(degree_level=degree_level, field_of_study=field_of_study)
     if not education:
         _trace("get_education no structured data")
@@ -341,7 +341,7 @@ def get_projects(
         return {"source": "rag", "confidence": rag_result["confidence"], "chunks": rag_result["chunks"]}
 
     # Fallback to structured data
-    from kk_utils.digital_me.service import get_projects_service as get_proj_svc
+    from kk_utils.digital_me.service import get_projects as get_proj_svc
     projects = get_proj_svc(technology=technology, role=role)
     if not projects:
         _trace("get_projects no structured data")
@@ -390,7 +390,7 @@ def get_certifications(
         return {"source": "rag", "confidence": rag_result["confidence"], "chunks": rag_result["chunks"]}
 
     # Fallback to structured data
-    from kk_utils.digital_me.service import get_certifications_service as get_cert_svc
+    from kk_utils.digital_me.service import get_certifications as get_cert_svc
     certs = get_cert_svc(issuer=issuer, include_expired=include_expired)
     if not certs:
         _trace("get_certifications no structured data")
@@ -420,8 +420,8 @@ def get_digital_me_summary(
         dict with profile summary
     """
     _trace("get_digital_me_summary start")
-    from kk_utils.digital_me.service import get_digital_me_summary_service
-    result = get_digital_me_summary_service()
+    from kk_utils.digital_me.service import get_digital_me_summary as get_summary_svc
+    result = get_summary_svc()
     _trace("get_digital_me_summary done")
     return result
 
