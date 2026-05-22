@@ -109,9 +109,10 @@ async def test_anthropic_generate_vision_raw_uses_image_blocks(anthropic_service
     assert result["raw_content"] == '{"description":"a cat"}'
     call = service.anthropic_client.messages.calls[0]
     content = call["messages"][0]["content"]
-    assert content[0]["type"] == "image"
-    assert content[0]["source"]["media_type"] == "image/png"
-    assert content[1]["type"] == "text"
+    assert content[0]["type"] == "text"
+    assert content[0]["text"] == "What is in this image?"
+    assert content[1]["type"] == "image"
+    assert content[1]["source"]["media_type"] == "image/png"
     assert "Return ONLY valid JSON" in call["system"]
 
 

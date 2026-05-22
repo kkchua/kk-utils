@@ -20,7 +20,7 @@ Coder Architecture (direct CLI invocation):
 Usage:
     from kk_utils.agents import MasterAgent, AgentResponse
 
-    agent = MasterAgent(personas_config_path="config/personas.yaml")
+    agent = MasterAgent()
     response = await agent.chat(
         message="Hello",
         persona_name="ai_assistant",

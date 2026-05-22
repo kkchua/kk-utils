@@ -224,6 +224,9 @@ class AIService:
                 base_url=self.base_url,
                 timeout=httpx.Timeout(MODEL_SDK_TIMEOUT_SECONDS),
             )
+            # Suppress verbose HTTP request/response logging from Anthropic SDK
+            logging.getLogger("anthropic").setLevel(logging.WARNING)
+            logging.getLogger("anthropic._base_client").setLevel(logging.WARNING)
             self.client = None
         else:
             client_kwargs: Dict[str, Any] = {
@@ -540,12 +543,12 @@ class AIService:
                 tool_args = {k: v for k, v in tool_args.items() if v is not None}
                 if _persona_collection:
                     function_ref = _tool_def.get("function_ref")
-                    tool_tags = list(getattr(function_ref, "__agent_tool__", {}).get("tags", [])) if function_ref else []
-                    if "digital_me" in tool_tags:
-                        # Use explicit override: LLM sometimes sends persona_collection=""
-                        # and setdefault() won't replace an existing empty string.
-                        if not tool_args.get("persona_collection"):
-                            tool_args["persona_collection"] = _persona_collection
+                    tool_meta = getattr(function_ref, "__agent_tool__", {}) if function_ref else {}
+                    tool_tags = list(tool_meta.get("tags", []))
+                    tool_params = tool_meta.get("parameters", {}).get("properties", {}) if tool_meta else {}
+                    if "persona_collection" in tool_params or "digital_me" in tool_tags:
+                        # Persona collection is runtime-owned context, not LLM-owned input.
+                        tool_args["persona_collection"] = _persona_collection
 
                 logger.debug(f"Tool call: {_name}({tool_args})")
                 result = registry.execute(_name, **tool_args)
@@ -1037,10 +1040,12 @@ class AIService:
         if not self.anthropic_client:
             raise RuntimeError(f"AIService not ready (provider={self.provider})")
 
+        # Text MUST come before image in Anthropic content array.
+        # This matches the OpenAI path order (input_text before input_image).
         content: List[Dict[str, Any]] = []
+        content.extend(self._anthropic_text_message(user_text))
         if image_b64 and image_mime:
             content.extend(self._anthropic_image_message(image_b64, image_mime))
-        content.extend(self._anthropic_text_message(user_text))
 
         response = await self._anthropic_messages_create(
             model=self.model,
