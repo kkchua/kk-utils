@@ -49,6 +49,7 @@ _KNOWN_SKILLS = [
     "hot_topics",
     "notes",
     "portfolio_publisher",
+    "rag_search",
     "web_search",
 ]
 

@@ -8,6 +8,7 @@ Core utility library for Python projects.
 - **Logging Configuration** - Structured logging with multiple formatters
 - **Config Loading** - YAML configuration with caching
 - **Path Resolution** - Standardized path helpers
+- **Agent Orchestration** - `MasterAgent`-style entrypoints for persona-driven tool calling
 
 ## Installation
 
@@ -87,6 +88,13 @@ project_root = get_project_root()
 config_path = get_config_path()
 settings = config_path / "settings.yaml"
 ```
+
+### Agent / Model Policy
+
+- Keep model selection centralized in the backend or the application entrypoint.
+- Prefer resolving the active default model once and logging the source.
+- Use `kk-utils` for orchestration, tool registration, and prompt loading, not for per-skill model hardcoding.
+- Persona-scoped tools may declare `persona_collection`; the runtime injects the active persona collection into that argument before executing the tool.
 
 ## API Reference
 

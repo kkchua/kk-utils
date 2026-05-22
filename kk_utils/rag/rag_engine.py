@@ -10,14 +10,31 @@ Provides generic RAG functionality:
 from typing import List, Dict, Optional, Any
 from dataclasses import dataclass, field
 from datetime import datetime
+import json
 import logging
 import hashlib
+from html.parser import HTMLParser
 from pathlib import Path
 
 from kk_utils.rag.config import RAGConfig, get_rag_config
 from kk_utils.execution_trace import emit_trace
 
 logger = logging.getLogger(__name__)
+
+
+class _HTMLTextExtractor(HTMLParser):
+    """Lightweight HTML text extractor without extra dependencies."""
+
+    def __init__(self):
+        super().__init__()
+        self._parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        if data and data.strip():
+            self._parts.append(data)
+
+    def get_text(self) -> str:
+        return " ".join(self._parts)
 
 
 @dataclass
@@ -71,6 +88,15 @@ class RAGEngine:
         results = rag.query("How do I...?")
     """
     
+    SUPPORTED_FILE_TYPES: Dict[str, str] = {
+        ".pdf": "pdf",
+        ".docx": "docx",
+        ".txt": "txt",
+        ".md": "md",
+        ".html": "html",
+        ".json": "json",
+    }
+
     def __init__(
         self,
         collection_name: str = "default",
@@ -100,6 +126,26 @@ class RAGEngine:
         self.chunker = self._create_chunker()
         
         logger.info(f"RAG engine initialized with {self.collection.count() if self.collection else 0} chunks")
+
+    @classmethod
+    def supported_file_map(cls) -> Dict[str, str]:
+        """Return a copy of the supported file type mapping."""
+        return dict(cls.SUPPORTED_FILE_TYPES)
+
+    @classmethod
+    def supported_file_extensions(cls) -> List[str]:
+        """Return supported file extensions including the leading dot."""
+        return list(cls.SUPPORTED_FILE_TYPES.keys())
+
+    @classmethod
+    def supports_file_type(cls, file_ext: str) -> bool:
+        """Check whether a file extension is supported by the ingestion pipeline."""
+        return file_ext.lower() in cls.SUPPORTED_FILE_TYPES
+
+    @classmethod
+    def file_type_for_extension(cls, file_ext: str) -> Optional[str]:
+        """Map a file extension to the canonical file type label."""
+        return cls.SUPPORTED_FILE_TYPES.get(file_ext.lower())
     
     def _init_chromadb(self, persist_directory: Optional[str]):
         """Initialize ChromaDB client and collection."""
@@ -232,6 +278,162 @@ class RAGEngine:
             "chunks_added": len(chunks),
             "total_chunks": self.collection.count(),
         }
+
+    async def ingest_file(
+        self,
+        file_path: str | Path,
+        doc_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
+        filename: Optional[str] = None,
+        collection_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Ingest a supported file into RAG.
+
+        This owns the extraction pipeline for all supported types, then chunks
+        and writes the extracted text to ChromaDB.
+        """
+        path = Path(file_path)
+        if not path.exists():
+            raise FileNotFoundError(f"File not found: {path}")
+
+        file_ext = path.suffix.lower()
+        if not self.supports_file_type(file_ext):
+            raise ValueError(
+                f"Unsupported file type: {file_ext}. Supported: {self.supported_file_extensions()}"
+            )
+
+        file_type = self.file_type_for_extension(file_ext)
+        if not file_type:
+            raise ValueError(f"Could not resolve file type for extension: {file_ext}")
+
+        extracted_text = self._extract_text(path, file_type)
+        file_size_bytes = path.stat().st_size
+        resolved_filename = filename or path.name
+        resolved_collection = collection_name or self.collection_name
+
+        rag_metadata = dict(metadata or {})
+        if user_id:
+            rag_metadata["user_id"] = user_id
+        rag_metadata["collection"] = resolved_collection
+        rag_metadata["doc_id"] = doc_id
+        rag_metadata["file_type"] = file_type
+        rag_metadata["source_file"] = resolved_filename
+        rag_metadata["uploaded_at"] = datetime.now().isoformat()
+        rag_metadata["file_size_bytes"] = file_size_bytes
+
+        filename_lower = resolved_filename.lower()
+        if "resume" in filename_lower or "cv" in filename_lower:
+            rag_metadata["type"] = "resume"
+        elif "cover" in filename_lower and "letter" in filename_lower:
+            rag_metadata["type"] = "cover_letter"
+        else:
+            rag_metadata["type"] = "document"
+
+        result = self.add_document(
+            doc_id=doc_id,
+            text=extracted_text,
+            metadata=rag_metadata,
+        )
+
+        result.update({
+            "file_type": file_type,
+            "file_size_bytes": file_size_bytes,
+            "text_preview": extracted_text[:500],
+            "text": extracted_text,
+        })
+        return result
+
+    def _extract_text(self, file_path: Path, file_type: str) -> str:
+        """Extract text from a supported file type."""
+        if file_type == "pdf":
+            return self._extract_text_from_pdf(file_path)
+        if file_type == "docx":
+            return self._extract_text_from_docx(file_path)
+        if file_type in ("txt", "md"):
+            return self._extract_text_from_text(file_path)
+        if file_type == "html":
+            return self._extract_text_from_html(file_path)
+        if file_type == "json":
+            return self._extract_text_from_json(file_path)
+        raise ValueError(f"Unknown file type: {file_type}")
+
+    def _extract_text_from_pdf(self, file_path: Path) -> str:
+        """Extract text from PDF using PyMuPDF."""
+        try:
+            import fitz  # PyMuPDF
+
+            text_parts = []
+            with fitz.open(file_path) as doc:
+                for page in doc:
+                    text_parts.append(page.get_text())
+
+            return "\n".join(text_parts)
+
+        except ImportError:
+            logger.warning("PyMuPDF not installed. Install with: pip install pymupdf")
+            return "[PDF text extraction not available - install pymupdf]"
+        except Exception as e:
+            logger.error(f"PDF extraction failed: {e}")
+            return "[PDF text extraction failed]"
+
+    def _extract_text_from_docx(self, file_path: Path) -> str:
+        """Extract text from DOCX using python-docx."""
+        try:
+            from docx import Document
+
+            doc = Document(file_path)
+            text_parts = [para.text for para in doc.paragraphs if para.text.strip()]
+
+            return "\n".join(text_parts)
+
+        except ImportError:
+            logger.warning("python-docx not installed. Install with: pip install python-docx")
+            return "[DOCX text extraction not available - install python-docx]"
+        except Exception as e:
+            logger.error(f"DOCX extraction failed: {e}")
+            return "[DOCX text extraction failed]"
+
+    def _extract_text_from_text(self, file_path: Path) -> str:
+        """Extract text from TXT/MD files."""
+        try:
+            return file_path.read_text(encoding="utf-8")
+        except Exception as e:
+            logger.error(f"Text file reading failed: {e}")
+            return "[Text extraction failed]"
+
+    def _extract_text_from_html(self, file_path: Path) -> str:
+        """Extract visible text from HTML files."""
+        try:
+            raw_html = file_path.read_text(encoding="utf-8")
+        except Exception as e:
+            logger.error(f"HTML file reading failed: {e}")
+            return "[HTML extraction failed]"
+
+        try:
+            parser = _HTMLTextExtractor()
+            parser.feed(raw_html)
+            text = parser.get_text().strip()
+            return text or "[HTML extraction produced no text]"
+        except Exception as e:
+            logger.error(f"HTML extraction failed: {e}")
+            return "[HTML extraction failed]"
+
+    def _extract_text_from_json(self, file_path: Path) -> str:
+        """Extract readable text from JSON files."""
+        try:
+            raw_json = file_path.read_text(encoding="utf-8")
+        except Exception as e:
+            logger.error(f"JSON file reading failed: {e}")
+            return "[JSON extraction failed]"
+
+        try:
+            data = json.loads(raw_json)
+            return json.dumps(data, indent=2, ensure_ascii=False)
+        except Exception:
+            # Fall back to the raw text so the file is still indexable.
+            return raw_json
     
     def query(
         self,

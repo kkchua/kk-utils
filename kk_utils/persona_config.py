@@ -1,25 +1,24 @@
 """
 kk_utils.persona_config — Persona configuration loader
 
-Loads persona definitions from personas.yaml. Each persona is a digital twin
-of a real person, backed by its own isolated ChromaDB collection.
+Loads persona definitions from PostgreSQL when a DB session is available.
+Each persona is a digital twin of a real person, backed by its own isolated
+ChromaDB collection.
 
 Access to a persona is governed by the Governor's collection security levels:
   user_SL >= collection_SL  →  access granted
 
 Usage:
     from kk_utils.persona_config import load_persona, list_personas
-    from pathlib import Path
 
-    config = Path("config/personas.yaml")   # each app provides its own path
-    persona = load_persona("kengkoon", config_path=config)
+    persona = load_persona("kengkoon", db_session=session)
     print(persona.display_name)   # "Keng Koon"
     print(persona.collection)     # "persona_kengkoon"
     print(persona.skills)         # ["digital_me", "notes", "web_search"]
     print(persona.system_prompt)
 
-Note: config_path is required — kk-utils has no default persona config. Each
-application (backend, gradio app, etc.) provides its own personas.yaml path.
+Note: DB-backed personas are the primary runtime source of truth. A config_path
+may still be supplied for legacy standalone apps that have not moved to DB.
 """
 from __future__ import annotations
 
@@ -58,7 +57,7 @@ class PersonaConfig:
 
 
 def _load_yaml(config_path: Path) -> Dict:
-    """Load and parse personas.yaml."""
+    """Load and parse a legacy persona config file."""
     if not config_path.exists():
         logger.warning(f"Persona config not found: {config_path}")
         return {}
@@ -134,7 +133,7 @@ def load_persona(
 
     Priority:
     1. PostgreSQL personas table when db_session is provided
-    2. personas.yaml fallback (only when allow_yaml_fallback=True)
+    2. legacy config file fallback (only when allow_yaml_fallback=True)
     
     Note:
     Adapter baseline skills/tags are merged later by MasterAgent. The stored
@@ -142,9 +141,9 @@ def load_persona(
 
     Args:
         persona_name: Persona key (e.g. "kengkoon", "test")
-        config_path: Path to personas.yaml fallback (each app provides its own)
+        config_path: Path to a legacy persona config file.
         db_session: Optional SQLAlchemy session for DB-backed personas.
-        allow_yaml_fallback: If False, do not fall back to personas.yaml.
+        allow_yaml_fallback: If False, do not fall back to the legacy config.
 
     Returns:
         PersonaConfig or None if persona not found.
@@ -156,7 +155,7 @@ def load_persona(
     if not allow_yaml_fallback or config_path is None:
         if db_session is not None:
             logger.warning(
-                "Persona '%s' not found in PostgreSQL personas; YAML fallback disabled",
+                "Persona '%s' not found in PostgreSQL personas; legacy config fallback disabled",
                 persona_name,
             )
         return None
@@ -183,10 +182,10 @@ def load_persona(
 
 def list_personas(config_path: Path) -> List[PersonaConfig]:
     """
-    Return all personas defined in personas.yaml.
+    Return all personas defined in the legacy persona config file.
 
     Args:
-        config_path: Path to personas.yaml (required — each app provides its own).
+        config_path: Path to the legacy persona config file.
 
     Returns:
         List of PersonaConfig (all defined personas, regardless of access level).

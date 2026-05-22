@@ -152,7 +152,7 @@ class AgentMeFactory:
         from kk_utils.persona_config import load_persona
         persona = load_persona(persona_name, config_path=config_path)
         if persona is None:
-            raise ValueError(f"Persona '{persona_name}' not found in personas.yaml")
+            raise ValueError(f"Persona '{persona_name}' not found")
         return cls.for_persona(persona, user_role=user_role)
 
 
@@ -470,9 +470,9 @@ class MasterAgentFactory:
         Convenience: resolve persona by name and create agent.
         
         Args:
-            persona_name: Key from personas.yaml
+            persona_name: Persona key
             user_role: User role string
-            config_path: Path to personas.yaml
+            config_path: Path to a legacy persona config file
         
         Returns:
             BaseAgent instance

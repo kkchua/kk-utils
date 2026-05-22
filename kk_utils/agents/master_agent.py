@@ -12,7 +12,7 @@ Backend-agnostic agent orchestrator that:
 Usage:
     from kk_utils.agents import MasterAgent
 
-    agent = MasterAgent(personas_config_path="config/personas.yaml")
+    agent = MasterAgent()
     response = await agent.chat(
         message="Hello",
         persona_name="ai_assistant",
@@ -69,7 +69,7 @@ class MasterAgent:
         Initialize Master Agent.
 
         Args:
-            personas_config_path: Path to personas.yaml (required for chat)
+            personas_config_path: Optional legacy path for standalone apps.
             auto_register_adapters: If True, auto-register built-in adapters
             auto_register_handlers: If True, auto-register skill handlers
         """
@@ -122,10 +122,10 @@ class MasterAgent:
     
     def set_personas_config_path(self, path: str) -> None:
         """
-        Set personas config path.
+        Set the legacy persona config path for standalone apps.
         
         Args:
-            path: Path to personas.yaml
+            path: Path to the legacy persona config file
         """
         self.personas_config_path = Path(path)
     
@@ -175,10 +175,12 @@ class MasterAgent:
             ValueError: If persona not found or config path not set
             KeyError: If adapter not found
         """
-        if not self.personas_config_path:
-            raise ValueError("personas_config_path not set")
-        
         # 1. Load persona
+        # Backend deployments use the DB-backed persona table. The legacy
+        # config path is kept only for standalone apps that still rely on it.
+        if not self.personas_config_path and db_session is None and self.allow_persona_yaml_fallback:
+            raise ValueError("personas_config_path not set")
+
         persona = load_persona(
             persona_name,
             config_path=self.personas_config_path,

@@ -4,7 +4,7 @@ KK-Utils - Core Utility Library
 Common utilities for Python projects:
 - Environment loading with fail-fast
 - Centralized logging configuration
-- YAML config loading
+- YAML config loading for general app settings
 - Path resolution helpers
 - RAG client for Personal Assistant API
 - RAG core engine (direct ChromaDB access)
