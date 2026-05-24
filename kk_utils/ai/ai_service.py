@@ -1311,12 +1311,22 @@ class AIService:
             )
 
             use_schema = self._get_output_schema_enabled(context)
-            if use_schema and AgentOutputSchema:
+            # The OpenAI Agents SDK sends response_format json_schema whenever
+            # output_type is set on SDKAgent. DeepSeek only supports json_object
+            # (not json_schema), and Anthropic also rejects json_schema.
+            # For these providers, disable output_type and parse raw text ourselves.
+            skip_json_schema = self.provider in ("deepseek", "anthropic")
+            wrapped_output = None
+            if skip_json_schema:
+                logger.debug(
+                    "[_call_ai] provider=%s — disabling output_type "
+                    "(SDK sends json_schema which provider rejects)",
+                    self.provider,
+                )
+            elif use_schema and AgentOutputSchema:
                 wrapped_output = AgentOutputSchema(output_type, strict_json_schema=False)
             elif use_schema:
                 wrapped_output = output_type
-            else:
-                wrapped_output = None  # No schema enforcement — raw text output
 
             agent = SDKAgent(
                 name="AIServiceAgent",
@@ -1342,12 +1352,34 @@ class AIService:
                 return final_output
             elif isinstance(final_output, dict):
                 return output_type.model_validate(final_output)
-            elif isinstance(final_output, str) and not use_schema:
-                # Schema disabled — wrap raw text into a best-effort model
-                try:
-                    return output_type.model_validate({"response": final_output})
-                except Exception:
-                    return self._mock_response(output_type)
+            elif isinstance(final_output, str):
+                # Raw text from the model.
+                # When skip_json_schema is True, we forced output_type=None
+                # so the SDK returns raw text even if use_schema was True.
+                if skip_json_schema:
+                    # Try to extract JSON from the raw text and validate
+                    import json
+                    import re
+                    text = final_output.strip()
+                    # Try to find a JSON block
+                    json_match = re.search(r'\{.*\}', text, re.DOTALL)
+                    if json_match:
+                        try:
+                            parsed = json.loads(json_match.group())
+                            return output_type.model_validate(parsed)
+                        except (json.JSONDecodeError, Exception):
+                            pass
+                    # Fallback: try wrapping the full text
+                    try:
+                        return output_type.model_validate({"answer": text, "confidence": "medium", "sources_used": []})
+                    except Exception:
+                        return self._mock_response(output_type)
+                else:
+                    # Schema disabled — wrap raw text into a best-effort model
+                    try:
+                        return output_type.model_validate({"response": final_output})
+                    except Exception:
+                        return self._mock_response(output_type)
             else:
                 logger.error(f"Unexpected output type: {type(final_output)}")
                 return self._mock_response(output_type)
