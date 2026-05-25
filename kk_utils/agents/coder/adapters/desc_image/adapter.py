@@ -43,15 +43,9 @@ class DescImageCoderAdapter(BaseCoderAdapter):
     adapter_name = "desc_image"
     coder_alias = "desc_image"
 
-    FALLBACK_SYSTEM_PROMPT = (
-        "You are an image analysis assistant. "
-        "Examine the provided image and produce a clear, detailed description. "
-        "Focus on subject, composition, lighting, mood, and notable details."
-    )
-
     def build_system_prompt(self, context: Optional[Dict[str, Any]] = None) -> str:
         """
-        Build system prompt — DB first, file fallback, then hardcoded.
+        Build system prompt from llm_prompts only.
 
         Args:
             context: Optional context with db_session
@@ -61,19 +55,7 @@ class DescImageCoderAdapter(BaseCoderAdapter):
         """
         ctx = context or {}
         db_session = ctx.get("db_session")
-
-        # Try DB
-        prompt = self.load_prompt_from_db("default", db_session)
-        if prompt:
-            return prompt
-
-        # Try file
-        prompt = self.load_prompt_from_file("default")
-        if prompt:
-            return prompt
-
-        # Fallback
-        return self.FALLBACK_SYSTEM_PROMPT
+        return self.require_prompt_from_db("default", db_session)
 
     async def execute_coder(
         self,

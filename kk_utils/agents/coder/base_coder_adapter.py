@@ -7,7 +7,7 @@ and parse results from the meta.json sidecar contract.
 
 Responsibilities:
 - Resolve coder config from model_mapping.json
-- Build system prompt (DB-first, file fallback)
+- Build system prompt from llm_prompts
 - Invoke coder CLI with prompt + schema
 - Parse meta.json sidecar and return CoderResponse
 
@@ -82,8 +82,6 @@ class BaseCoderAdapter(ABC):
 
         Implementations should:
         1. Try DB: llm_prompts(namespace="coder", adapter=adapter_name, name="default")
-        2. Fallback: read from prompts/ directory
-        3. Fallback: minimal hardcoded string
 
         Args:
             context: Optional context dict for prompt variable substitution
@@ -393,26 +391,22 @@ class BaseCoderAdapter(ABC):
             logger.warning(f"[{self.adapter_name}] DB prompt loading failed: {e}")
         return None
 
-    def load_prompt_from_file(self, template_name: str = "default") -> Optional[str]:
-        """
-        Load prompt template from adapter's prompts/ directory.
+    def require_prompt_from_db(
+        self,
+        template_name: str = "default",
+        db_session=None,
+    ) -> str:
+        """Return a required DB-backed prompt or raise a configuration error."""
+        if db_session is None:
+            raise ValueError(
+                f"[{self.adapter_name}] db_session is required for DB-backed coder prompt loading"
+            )
 
-        Args:
-            template_name: Prompt template name (without .txt)
+        prompt = self.load_prompt_from_db(template_name, db_session)
+        if prompt:
+            return prompt
 
-        Returns:
-            Prompt text or None if not found
-        """
-        # Try adapter-specific prompts directory
-        adapter_dir = Path(__file__).parent / "adapters" / self.adapter_name / "prompts"
-        prompt_file = adapter_dir / f"{template_name}.txt"
-        if prompt_file.exists():
-            return prompt_file.read_text(encoding="utf-8")
-
-        # Try shared coder prompts directory
-        shared_prompts = Path(__file__).parent / "prompts"
-        prompt_file = shared_prompts / f"{self.adapter_name}_{template_name}.txt"
-        if prompt_file.exists():
-            return prompt_file.read_text(encoding="utf-8")
-
-        return None
+        raise ValueError(
+            f"[{self.adapter_name}] missing enabled llm_prompts row for "
+            f"namespace='coder', adapter={self.adapter_name!r}, name={template_name!r}"
+        )

@@ -173,6 +173,9 @@ class AIService:
             "openai": "OPENAI_API_KEY",
             "qwen": "DASHSCOPE_API_KEY",
             "dashscope": "DASHSCOPE_API_KEY",
+            "aigc": "DASHSCOPE_TOKEN_API_KEY",
+            "qwen_token": "DASHSCOPE_TOKEN_API_KEY",
+            "qwen_token_chat": "DASHSCOPE_TOKEN_API_KEY",
             "ollama": "OLLAMA_API_KEY",
             "anthropic": "ANTHROPIC_API_KEY",
             "deepseek": "DEEPSEEK_API_KEY"
@@ -200,6 +203,12 @@ class AIService:
         if not self.base_url:
             if self.provider in ("qwen", "dashscope"):
                 self.base_url = os.environ.get("DASHSCOPE_API_URL", "https://coding-intl.dashscope.aliyuncs.com/v1")
+            elif self.provider == "aigc":
+                self.base_url = os.environ.get("AIGC_API_URL", "https://token-plan.ap-southeast-1.maas.aliyuncs.com/api/v1")
+            elif self.provider == "qwen_token":
+                self.base_url = os.environ.get("DASHSCOPE_TOKEN_API_URL", os.environ.get("AIGC_API_URL", "https://token-plan.ap-southeast-1.maas.aliyuncs.com/api/v1"))
+            elif self.provider == "qwen_token_chat":
+                self.base_url = os.environ.get("DASHSCOPE_TOKEN_API_URL", os.environ.get("AIGC_API_URL", "https://token-plan.ap-southeast-1.maas.aliyuncs.com/api/v1"))
             if self.provider == "anthropic":
                 self.base_url = os.environ.get("ANTHROPIC_API_URL", "https://api.anthropic.com")
             if self.provider in ("deepseek"):
@@ -1315,7 +1324,7 @@ class AIService:
             # output_type is set on SDKAgent. DeepSeek only supports json_object
             # (not json_schema), and Anthropic also rejects json_schema.
             # For these providers, disable output_type and parse raw text ourselves.
-            skip_json_schema = self.provider in ("deepseek", "anthropic")
+            skip_json_schema = self.provider in ("deepseek", "qwen_token", "anthropic")
             wrapped_output = None
             if skip_json_schema:
                 logger.debug(
@@ -1441,9 +1450,16 @@ class AIService:
             instructions=system_prompt,
             model=sdk_model,
             model_settings=(
-                ModelSettings(extra_body={"response_format": {"type": "json_object"}})
+                ModelSettings(
+                    extra_body={
+                        "response_format": {"type": "json_object"},
+                        "max_completion_tokens": self.max_tokens,
+                    }
+                )
                 if (ModelSettings and use_json_format)
-                else ModelSettings()
+                else ModelSettings(
+                    extra_body={"max_completion_tokens": self.max_tokens}
+                )
             ) if ModelSettings else None,
         )
 
@@ -1547,9 +1563,16 @@ class AIService:
             instructions=system_prompt,
             model=sdk_model,
             model_settings=(
-                ModelSettings(extra_body={"response_format": {"type": "json_object"}})
+                ModelSettings(
+                    extra_body={
+                        "response_format": {"type": "json_object"},
+                        "max_completion_tokens": self.max_tokens,
+                    }
+                )
                 if (ModelSettings and use_json_format)
-                else ModelSettings()
+                else ModelSettings(
+                    extra_body={"max_completion_tokens": self.max_tokens}
+                )
             ) if ModelSettings else None,
         )
 

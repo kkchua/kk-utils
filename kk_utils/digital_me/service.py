@@ -1,8 +1,7 @@
 """
 kk_utils.digital_me.service — Digital Me Service
 
-Business logic for Digital Me structured data access.
-Data loaded from config/digital_me/profile.yaml
+Business logic for optional structured Digital Me data access.
 
 This module is backend-agnostic and can be used in:
 - FastAPI backend
@@ -29,6 +28,18 @@ logger = logging.getLogger(__name__)
 
 # Global cache for Digital Me data
 _digital_me_data = None
+
+
+def _empty_data() -> Dict[str, Any]:
+    """Return the empty structured profile shape."""
+    return {
+        "profile": {},
+        "work_experience": [],
+        "skills": [],
+        "education": [],
+        "projects": [],
+        "certifications": [],
+    }
 
 
 def _find_config_path() -> Path:
@@ -65,7 +76,7 @@ def _find_config_path() -> Path:
 
 
 def _load_digital_me_data() -> Dict[str, Any]:
-    """Load Digital Me data from YAML config."""
+    """Load optional structured Digital Me data from YAML config."""
     global _digital_me_data
 
     if _digital_me_data is not None:
@@ -76,110 +87,112 @@ def _load_digital_me_data() -> Dict[str, Any]:
 
     if config_path and config_path.exists():
         try:
-            _digital_me_data = yaml.safe_load(config_path.read_text(encoding='utf-8'))
+            loaded = yaml.safe_load(config_path.read_text(encoding='utf-8')) or {}
+            if _looks_like_placeholder_data(loaded):
+                logger.warning(
+                    "Structured Digital Me config at %s contains placeholder data; ignoring it",
+                    config_path,
+                )
+                _digital_me_data = _empty_data()
+                return _digital_me_data
+
+            _digital_me_data = loaded
             logger.info(f"Loaded Digital Me data from {config_path}")
             return _digital_me_data
         except Exception as e:
             logger.error(f"Failed to load Digital Me data: {e}")
 
-    # Return sample data if file not found
-    _digital_me_data = _get_sample_data()
-    logger.info("Using sample Digital Me data")
+    _digital_me_data = _empty_data()
+    logger.info("Structured Digital Me data not configured")
     return _digital_me_data
 
 
-def _get_sample_data() -> Dict[str, Any]:
-    """Get sample Digital Me data."""
-    return {
-        "profile": {
-            "name": "John Doe",
-            "title": "Senior Software Engineer",
-            "summary": "Experienced software engineer with 10+ years in full-stack development, specializing in Python, JavaScript, and cloud architectures.",
-            "location": "San Francisco, CA",
-            "email": "john.doe@example.com",
-            "linkedin": "linkedin.com/in/johndoe",
-            "github": "github.com/johndoe",
-        },
-        "work_experience": [
-            {
-                "company": "Tech Corp",
-                "position": "Senior Software Engineer",
-                "start_date": "2020-01",
-                "end_date": "present",
-                "location": "San Francisco, CA",
-                "description": "Led development of scalable microservices architecture",
-                "achievements": [
-                    "Reduced API latency by 40% through optimization",
-                    "Mentored 5 junior developers",
-                    "Led migration from monolith to microservices",
-                ],
-                "technologies": ["Python", "FastAPI", "Kubernetes", "AWS"],
-            },
-            {
-                "company": "StartupXYZ",
-                "position": "Full Stack Developer",
-                "start_date": "2017-03",
-                "end_date": "2019-12",
-                "location": "San Francisco, CA",
-                "description": "Built scalable web applications for e-commerce platform",
-                "achievements": [
-                    "Developed React-based frontend used by 100K+ users",
-                    "Implemented CI/CD pipeline reducing deployment time by 60%",
-                ],
-                "technologies": ["JavaScript", "React", "Node.js", "PostgreSQL"],
-            },
-        ],
-        "skills": [
-            {"name": "Python", "category": "technical", "proficiency": 5, "years": 10},
-            {"name": "JavaScript", "category": "technical", "proficiency": 4, "years": 8},
-            {"name": "FastAPI", "category": "technical", "proficiency": 5, "years": 4},
-            {"name": "React", "category": "technical", "proficiency": 4, "years": 6},
-            {"name": "AWS", "category": "technical", "proficiency": 4, "years": 7},
-            {"name": "Kubernetes", "category": "technical", "proficiency": 3, "years": 3},
-            {"name": "Leadership", "category": "soft", "proficiency": 4, "years": 5},
-            {"name": "Communication", "category": "soft", "proficiency": 5, "years": 10},
-        ],
-        "education": [
-            {
-                "institution": "University of California, Berkeley",
-                "degree": "Bachelor of Science",
-                "field": "Computer Science",
-                "graduation_year": 2016,
-                "gpa": "3.8",
-            }
-        ],
-        "projects": [
-            {
-                "name": "E-commerce Platform",
-                "role": "Lead Developer",
-                "technologies": ["Python", "Django", "React", "PostgreSQL"],
-                "description": "Built scalable e-commerce platform handling $1M+ monthly transactions",
-                "url": "https://example.com",
-            },
-            {
-                "name": "Real-time Analytics Dashboard",
-                "role": "Full Stack Developer",
-                "technologies": ["React", "D3.js", "WebSocket", "Redis"],
-                "description": "Created real-time analytics dashboard for business intelligence",
-            },
-        ],
-        "certifications": [
-            {
-                "name": "AWS Solutions Architect Professional",
-                "issuer": "Amazon Web Services",
-                "date": "2022-06",
-                "expiry_date": "2025-06",
-                "credential_id": "AWS-PSA-12345",
-            },
-            {
-                "name": "Certified Kubernetes Administrator",
-                "issuer": "Cloud Native Computing Foundation",
-                "date": "2021-03",
-                "expiry_date": "2024-03",
-                "credential_id": "CKA-67890",
-            },
-        ],
-    }
+def _value_looks_placeholder(value: Any) -> bool:
+    """Heuristic check for placeholder/template values."""
+    if not isinstance(value, str):
+        return False
+
+    stripped = value.strip()
+    if not stripped:
+        return False
+
+    return (
+        (stripped.startswith("[") and stripped.endswith("]"))
+        or stripped == "YYYY-MM"
+    )
+
+
+def _looks_like_placeholder_data(data: Dict[str, Any]) -> bool:
+    """Detect obviously unedited placeholder structured profile data."""
+    profile = data.get("profile") or {}
+    work_experience = data.get("work_experience") or []
+    education = data.get("education") or []
+    projects = data.get("projects") or []
+    certifications = data.get("certifications") or []
+
+    placeholder_hits = 0
+
+    for value in (
+        profile.get("title"),
+        profile.get("summary"),
+        profile.get("location"),
+        profile.get("email"),
+        profile.get("linkedin"),
+        profile.get("github"),
+        profile.get("website"),
+    ):
+        if _value_looks_placeholder(value):
+            placeholder_hits += 1
+
+    if work_experience:
+        first = work_experience[0] or {}
+        for value in (
+            first.get("company"),
+            first.get("position"),
+            first.get("start_date"),
+            first.get("location"),
+            first.get("description"),
+        ):
+            if _value_looks_placeholder(value):
+                placeholder_hits += 1
+
+    if education:
+        first = education[0] or {}
+        for value in (
+            first.get("institution"),
+            first.get("degree"),
+            first.get("field"),
+            first.get("gpa"),
+        ):
+            if _value_looks_placeholder(value):
+                placeholder_hits += 1
+
+    if projects:
+        first = projects[0] or {}
+        for value in (
+            first.get("name"),
+            first.get("role"),
+            first.get("start_date"),
+            first.get("description"),
+            first.get("url"),
+        ):
+            if _value_looks_placeholder(value):
+                placeholder_hits += 1
+
+    if certifications:
+        first = certifications[0] or {}
+        for value in (
+            first.get("name"),
+            first.get("issuer"),
+            first.get("date"),
+            first.get("expiry_date"),
+            first.get("credential_id"),
+            first.get("credential_url"),
+        ):
+            if _value_looks_placeholder(value):
+                placeholder_hits += 1
+
+    return placeholder_hits >= 3
 
 
 def get_work_experience(company: Optional[str] = None) -> List[Dict]:
@@ -309,6 +322,22 @@ def get_digital_me_summary() -> Dict[str, Any]:
     profile = data.get("profile", {})
     work_exp = data.get("work_experience", [])
     skills = data.get("skills", [])
+    projects = data.get("projects", [])
+    certifications = data.get("certifications", [])
+
+    if not any([profile, work_exp, skills, projects, certifications]):
+        return {
+            "available": False,
+            "message": "Structured profile summary information is not available.",
+            "name": None,
+            "title": None,
+            "summary": "",
+            "total_experience_years": 0,
+            "current_position": None,
+            "top_skills": [],
+            "total_projects": 0,
+            "total_certifications": 0,
+        }
     
     # Get top skills
     top_skills = sorted(
@@ -324,6 +353,6 @@ def get_digital_me_summary() -> Dict[str, Any]:
         "total_experience_years": len(work_exp) * 3,  # Rough estimate
         "current_position": work_exp[0] if work_exp else None,
         "top_skills": top_skills,
-        "total_projects": len(data.get("projects", [])),
-        "total_certifications": len(data.get("certifications", [])),
+        "total_projects": len(projects),
+        "total_certifications": len(certifications),
     }

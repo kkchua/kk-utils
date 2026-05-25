@@ -1,7 +1,7 @@
 """
 kk_utils.persona_config — Persona configuration loader
 
-Loads persona definitions from PostgreSQL when a DB session is available.
+Loads persona definitions from PostgreSQL.
 Each persona is a digital twin of a real person, backed by its own isolated
 ChromaDB collection.
 
@@ -9,16 +9,13 @@ Access to a persona is governed by the Governor's collection security levels:
   user_SL >= collection_SL  →  access granted
 
 Usage:
-    from kk_utils.persona_config import load_persona, list_personas
+    from kk_utils.persona_config import load_persona
 
     persona = load_persona("kengkoon", db_session=session)
     print(persona.display_name)   # "Keng Koon"
     print(persona.collection)     # "persona_kengkoon"
     print(persona.skills)         # ["digital_me", "notes", "web_search"]
     print(persona.system_prompt)
-
-Note: DB-backed personas are the primary runtime source of truth. A config_path
-may still be supplied for legacy standalone apps that have not moved to DB.
 """
 from __future__ import annotations
 
@@ -26,8 +23,6 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional  # Optional kept for return types
-
-import yaml
 
 logger = logging.getLogger(__name__)
 
@@ -56,18 +51,6 @@ class PersonaConfig:
                 self.adapter_type = "ai_assistant"
 
 
-def _load_yaml(config_path: Path) -> Dict:
-    """Load and parse a legacy persona config file."""
-    if not config_path.exists():
-        logger.warning(f"Persona config not found: {config_path}")
-        return {}
-    try:
-        return yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-    except Exception as e:
-        logger.error(f"Failed to load persona config from {config_path}: {e}")
-        return {}
-
-
 def _load_persona_from_db(persona_name: str, db_session) -> Optional[PersonaConfig]:
     """Load a persona from PostgreSQL if a session is available."""
     if db_session is None:
@@ -87,7 +70,12 @@ def _load_persona_from_db(persona_name: str, db_session) -> Optional[PersonaConf
             return None
 
         prompt = get_prompt_service().get(db_session, namespace="agent", adapter="", name=persona_name)
-        system_prompt = prompt.prompt_text if prompt and prompt.prompt_text else "You are a helpful AI assistant."
+        if not prompt or not (prompt.prompt_text or "").strip():
+            raise ValueError(
+                f"Persona {persona_name!r} is missing an enabled llm_prompts row "
+                f"(namespace='agent', adapter='', name={persona_name!r})"
+            )
+        system_prompt = prompt.prompt_text
 
         discovery = get_skill_discovery_service()
         derived_tags: list[str] = []
@@ -117,6 +105,8 @@ def _load_persona_from_db(persona_name: str, db_session) -> Optional[PersonaConf
             adapter_prompt_template=persona.persona_name,
             adapter_schema=None,
         )
+    except ValueError:
+        raise
     except Exception as e:
         logger.warning(f"Failed to load persona '{persona_name}' from DB: {e}")
         return None
@@ -126,14 +116,13 @@ def load_persona(
     persona_name: str,
     config_path: Optional[Path] = None,
     db_session=None,
-    allow_yaml_fallback: bool = True,
+    allow_yaml_fallback: bool = False,
 ) -> Optional[PersonaConfig]:
     """
     Load a persona by name.
 
-    Priority:
-    1. PostgreSQL personas table when db_session is provided
-    2. legacy config file fallback (only when allow_yaml_fallback=True)
+    Personas are DB-backed. `config_path` and `allow_yaml_fallback` are kept
+    only for API compatibility with older callers.
     
     Note:
     Adapter baseline skills/tags are merged later by MasterAgent. The stored
@@ -141,9 +130,9 @@ def load_persona(
 
     Args:
         persona_name: Persona key (e.g. "kengkoon", "test")
-        config_path: Path to a legacy persona config file.
+        config_path: Deprecated legacy parameter. Ignored.
         db_session: Optional SQLAlchemy session for DB-backed personas.
-        allow_yaml_fallback: If False, do not fall back to the legacy config.
+        allow_yaml_fallback: Deprecated legacy parameter. Ignored.
 
     Returns:
         PersonaConfig or None if persona not found.
@@ -152,57 +141,20 @@ def load_persona(
     if db_persona is not None:
         return db_persona
 
-    if not allow_yaml_fallback or config_path is None:
-        if db_session is not None:
-            logger.warning(
-                "Persona '%s' not found in PostgreSQL personas; legacy config fallback disabled",
-                persona_name,
-            )
-        return None
-
-    path = config_path
-    data = _load_yaml(path)
-    raw = data.get("personas", {}).get(persona_name)
-    if raw is None:
-        logger.warning(f"Persona '{persona_name}' not found in {path}")
-        return None
-
-    return PersonaConfig(
-        name=persona_name,
-        display_name=raw.get("display_name", persona_name),
-        collection=raw.get("collection", persona_name),
-        skills=raw.get("skills", []),
-        skill_tags=raw.get("skill_tags", []),
-        system_prompt=raw.get("system_prompt", "You are a helpful AI assistant.").strip(),
-        adapter_type=raw.get("adapter_type"),
-        adapter_prompt_template=raw.get("adapter_prompt_template", "default"),
-        adapter_schema=raw.get("adapter_schema"),
-    )
+    if config_path is not None or allow_yaml_fallback:
+        logger.warning(
+            "Persona '%s' was requested without a DB-backed persona session; YAML fallback has been removed",
+            persona_name,
+        )
+    return None
 
 
-def list_personas(config_path: Path) -> List[PersonaConfig]:
+def list_personas(config_path: Optional[Path] = None) -> List[PersonaConfig]:
     """
-    Return all personas defined in the legacy persona config file.
+    Legacy helper retained for compatibility.
 
-    Args:
-        config_path: Path to the legacy persona config file.
-
-    Returns:
-        List of PersonaConfig (all defined personas, regardless of access level).
+    Personas are stored in PostgreSQL, so this function no longer reads YAML.
     """
-    path = config_path
-    data = _load_yaml(path)
-    result = []
-    for name, raw in data.get("personas", {}).items():
-        result.append(PersonaConfig(
-            name=name,
-            display_name=raw.get("display_name", name),
-            collection=raw.get("collection", name),
-            skills=raw.get("skills", []),
-            skill_tags=raw.get("skill_tags", []),
-            system_prompt=raw.get("system_prompt", "You are a helpful AI assistant.").strip(),
-            adapter_type=raw.get("adapter_type"),
-            adapter_prompt_template=raw.get("adapter_prompt_template", "default"),
-            adapter_schema=raw.get("adapter_schema"),
-        ))
-    return result
+    if config_path is not None:
+        logger.warning("list_personas(config_path=...) is deprecated; YAML persona loading has been removed")
+    return []

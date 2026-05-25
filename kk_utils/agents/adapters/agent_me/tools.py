@@ -95,7 +95,8 @@ def search_digital_me(
         sanitized_chunks = []
         for chunk in result.chunks if result.has_results else []:
             sanitized_chunk = {
-                "content": chunk.get("content", ""),
+                # RAGEngine.query() returns chunk text under "text".
+                "content": chunk.get("text", chunk.get("content", "")),
                 "metadata": {
                     k: v for k, v in chunk.get("metadata", {}).items()
                     if k not in ["user_id", "access_level"]
