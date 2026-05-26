@@ -24,6 +24,7 @@ import json
 import logging
 from multiprocessing import context
 import os
+from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -58,6 +59,23 @@ except ImportError:
     FunctionTool = None
 
 logger = logging.getLogger(__name__)
+
+def _env_flag(name: str, default: bool = True) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off", ""}
+
+def _raw_response_logging_enabled() -> bool:
+    return _env_flag("AI_RAW_RESPONSE_LOGGING_ENABLED", True)
+
+
+def _raw_response_dir() -> Path:
+    return Path(
+        os.environ.get("AI_RAW_RESPONSE_DIR")
+        or os.environ.get("KK_UTILS_RAW_RESPONSE_DIR")
+        or "/tmp/kk-utils/raw-responses"
+    )
 
 MODEL_SDK_TIMEOUT_SECONDS = 600
 _ANTHROPIC_RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504}
@@ -148,13 +166,15 @@ class AIService:
         api_base_url: Optional[str] = None,
         api_key: Optional[str] = None,
         temperature: float = 0.7,
-        max_tokens: int = 4000,
+        max_tokens: int = 5000,
         enable_output_schema: bool = True,
+        extra_body: Optional[Dict[str, Any]] = None,
     ):
         self.api_model = api_model
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.enable_output_schema = enable_output_schema
+        self.extra_body = dict(extra_body or {})
         self.anthropic_client = None
 
         # Parse provider/model format
@@ -173,6 +193,9 @@ class AIService:
             "openai": "OPENAI_API_KEY",
             "qwen": "DASHSCOPE_API_KEY",
             "dashscope": "DASHSCOPE_API_KEY",
+            "aigc": "DASHSCOPE_TOKEN_API_KEY",
+            "qwen_token": "DASHSCOPE_TOKEN_API_KEY",
+            "qwen_token_chat": "DASHSCOPE_TOKEN_API_KEY",
             "ollama": "OLLAMA_API_KEY",
             "anthropic": "ANTHROPIC_API_KEY",
             "deepseek": "DEEPSEEK_API_KEY"
@@ -200,6 +223,12 @@ class AIService:
         if not self.base_url:
             if self.provider in ("qwen", "dashscope"):
                 self.base_url = os.environ.get("DASHSCOPE_API_URL", "https://coding-intl.dashscope.aliyuncs.com/v1")
+            elif self.provider == "aigc":
+                self.base_url = os.environ.get("AIGC_API_URL", "https://token-plan.ap-southeast-1.maas.aliyuncs.com/api/v1")
+            elif self.provider == "qwen_token":
+                self.base_url = os.environ.get("DASHSCOPE_TOKEN_API_URL", os.environ.get("AIGC_API_URL", "https://token-plan.ap-southeast-1.maas.aliyuncs.com/api/v1"))
+            elif self.provider == "qwen_token_chat":
+                self.base_url = os.environ.get("DASHSCOPE_TOKEN_API_URL", os.environ.get("AIGC_API_URL", "https://token-plan.ap-southeast-1.maas.aliyuncs.com/api/v1"))
             if self.provider == "anthropic":
                 self.base_url = os.environ.get("ANTHROPIC_API_URL", "https://api.anthropic.com")
             if self.provider in ("deepseek"):
@@ -247,6 +276,123 @@ class AIService:
         )
 
         self._prompts = self._load_prompts()
+
+    def _merge_extra_body(self, request_extra_body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        merged = dict(self.extra_body)
+        if request_extra_body:
+            merged.update(request_extra_body)
+        return merged
+
+    def _raw_response_filename(self, purpose: str, suffix: str = ".json") -> Path:
+        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+        safe_provider = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in self.provider)
+        safe_model = "".join(c if c.isalnum() or c in ("-", "_", ".") else "_" for c in self.model)
+        raw_dir = _raw_response_dir()
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        return raw_dir / f"{ts}_{purpose}_{safe_provider}_{safe_model}{suffix}"
+
+    def _to_jsonable(self, value: Any) -> Any:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, Path):
+            return str(value)
+        if isinstance(value, dict):
+            return {str(k): self._to_jsonable(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [self._to_jsonable(v) for v in value]
+        if hasattr(value, "model_dump"):
+            try:
+                return self._to_jsonable(value.model_dump())
+            except Exception:
+                pass
+        if hasattr(value, "to_dict"):
+            try:
+                return self._to_jsonable(value.to_dict())
+            except Exception:
+                pass
+        if hasattr(value, "__dict__"):
+            try:
+                return self._to_jsonable(vars(value))
+            except Exception:
+                pass
+        return repr(value)
+
+    def _save_raw_response_object(self, *, purpose: str, raw_response: Any) -> Optional[str]:
+        if not _raw_response_logging_enabled():
+            return None
+        path = self._raw_response_filename(purpose)
+        payload = {
+            "provider": self.provider,
+            "model": self.model,
+            "saved_at": datetime.utcnow().isoformat() + "Z",
+            "response": self._to_jsonable(raw_response),
+        }
+        try:
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            logger.info("[raw] saved provider response -> %s", path)
+            return str(path)
+        except Exception as exc:
+            logger.warning("[raw] failed to save provider response: %s", exc)
+            return None
+
+    def _extract_text_from_raw_response(self, raw_response: Any) -> str:
+        if raw_response is None:
+            return ""
+
+        def _from_message(message: Any) -> str:
+            if isinstance(message, str):
+                return message
+            if isinstance(message, dict):
+                content = message.get("content")
+                if isinstance(content, str):
+                    return content
+                if isinstance(content, list):
+                    return _from_message(SimpleNamespace(content=content))
+                text = message.get("text")
+                return text if isinstance(text, str) else ""
+
+            content = getattr(message, "content", None)
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                parts: List[str] = []
+                for item in content:
+                    if isinstance(item, str):
+                        parts.append(item)
+                        continue
+                    if isinstance(item, dict):
+                        text = item.get("text")
+                        if isinstance(text, str):
+                            parts.append(text)
+                            continue
+                    text = getattr(item, "text", None)
+                    if isinstance(text, str):
+                        parts.append(text)
+                return "".join(parts)
+
+            text = getattr(message, "text", None)
+            return text if isinstance(text, str) else ""
+
+        choices = getattr(raw_response, "choices", None)
+        if choices:
+            texts: List[str] = []
+            for choice in choices:
+                message = getattr(choice, "message", None)
+                if message is None and isinstance(choice, dict):
+                    message = choice.get("message")
+                text = _from_message(message)
+                if text:
+                    texts.append(text)
+            if texts:
+                return "\n".join(texts)
+
+        response_payload = self._to_jsonable(raw_response)
+        if isinstance(response_payload, dict):
+            for key in ("output_text", "text", "content"):
+                value = response_payload.get(key)
+                if isinstance(value, str):
+                    return value
+        return ""
 
     # -------------------------------------------------------------------------
     # Public API
@@ -1056,6 +1202,10 @@ class AIService:
         )
 
         raw_content = self._extract_anthropic_text(response)
+        raw_response_path = self._save_raw_response_object(
+            purpose="anthropic_raw",
+            raw_response=response,
+        )
         usage = getattr(response, "usage", None)
         prompt_tokens = getattr(usage, "input_tokens", 0) if usage else 0
         completion_tokens = getattr(usage, "output_tokens", 0) if usage else 0
@@ -1063,6 +1213,7 @@ class AIService:
 
         return {
             "raw_content": raw_content,
+            "raw_response_path": raw_response_path,
             "finish_reason": getattr(response, "stop_reason", "stop") or "stop",
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
@@ -1311,12 +1462,22 @@ class AIService:
             )
 
             use_schema = self._get_output_schema_enabled(context)
-            if use_schema and AgentOutputSchema:
+            # The OpenAI Agents SDK sends response_format json_schema whenever
+            # output_type is set on SDKAgent. DeepSeek only supports json_object
+            # (not json_schema), and Anthropic also rejects json_schema.
+            # For these providers, disable output_type and parse raw text ourselves.
+            skip_json_schema = self.provider in ("deepseek", "qwen_token", "anthropic")
+            wrapped_output = None
+            if skip_json_schema:
+                logger.debug(
+                    "[_call_ai] provider=%s — disabling output_type "
+                    "(SDK sends json_schema which provider rejects)",
+                    self.provider,
+                )
+            elif use_schema and AgentOutputSchema:
                 wrapped_output = AgentOutputSchema(output_type, strict_json_schema=False)
             elif use_schema:
                 wrapped_output = output_type
-            else:
-                wrapped_output = None  # No schema enforcement — raw text output
 
             agent = SDKAgent(
                 name="AIServiceAgent",
@@ -1324,7 +1485,9 @@ class AIService:
                 model=model,
                 output_type=wrapped_output,
                 model_settings=ModelSettings(
-                    extra_body={"max_completion_tokens": self.max_tokens}
+                    extra_body=self._merge_extra_body(
+                        {"max_completion_tokens": self.max_tokens}
+                    )
                 ) if ModelSettings else None,
             )
 
@@ -1342,12 +1505,34 @@ class AIService:
                 return final_output
             elif isinstance(final_output, dict):
                 return output_type.model_validate(final_output)
-            elif isinstance(final_output, str) and not use_schema:
-                # Schema disabled — wrap raw text into a best-effort model
-                try:
-                    return output_type.model_validate({"response": final_output})
-                except Exception:
-                    return self._mock_response(output_type)
+            elif isinstance(final_output, str):
+                # Raw text from the model.
+                # When skip_json_schema is True, we forced output_type=None
+                # so the SDK returns raw text even if use_schema was True.
+                if skip_json_schema:
+                    # Try to extract JSON from the raw text and validate
+                    import json
+                    import re
+                    text = final_output.strip()
+                    # Try to find a JSON block
+                    json_match = re.search(r'\{.*\}', text, re.DOTALL)
+                    if json_match:
+                        try:
+                            parsed = json.loads(json_match.group())
+                            return output_type.model_validate(parsed)
+                        except (json.JSONDecodeError, Exception):
+                            pass
+                    # Fallback: try wrapping the full text
+                    try:
+                        return output_type.model_validate({"answer": text, "confidence": "medium", "sources_used": []})
+                    except Exception:
+                        return self._mock_response(output_type)
+                else:
+                    # Schema disabled — wrap raw text into a best-effort model
+                    try:
+                        return output_type.model_validate({"response": final_output})
+                    except Exception:
+                        return self._mock_response(output_type)
             else:
                 logger.error(f"Unexpected output type: {type(final_output)}")
                 return self._mock_response(output_type)
@@ -1409,9 +1594,20 @@ class AIService:
             instructions=system_prompt,
             model=sdk_model,
             model_settings=(
-                ModelSettings(extra_body={"response_format": {"type": "json_object"}})
+                ModelSettings(
+                    extra_body=self._merge_extra_body(
+                        {
+                            "response_format": {"type": "json_object"},
+                            "max_completion_tokens": self.max_tokens,
+                        }
+                    )
+                )
                 if (ModelSettings and use_json_format)
-                else ModelSettings()
+                else ModelSettings(
+                    extra_body=self._merge_extra_body(
+                        {"max_completion_tokens": self.max_tokens}
+                    )
+                )
             ) if ModelSettings else None,
         )
 
@@ -1436,7 +1632,16 @@ class AIService:
             result = await Runner.run(agent, user_messages)
         elapsed_ms = int((time.monotonic() - t0) * 1000)
 
-        raw_content = result.final_output if isinstance(result.final_output, str) else ""
+        raw_response = result.raw_responses[-1] if result.raw_responses else result
+        raw_response_path = self._save_raw_response_object(
+            purpose="vision_raw",
+            raw_response=raw_response,
+        )
+        raw_content = (
+            result.final_output
+            if isinstance(result.final_output, str)
+            else self._extract_text_from_raw_response(raw_response)
+        )
 
         # Extract usage from last raw response
         prompt_tokens = completion_tokens = total_tokens = 0
@@ -1459,6 +1664,7 @@ class AIService:
 
         return {
             "raw_content": raw_content,
+            "raw_response_path": raw_response_path,
             "finish_reason": finish_reason,
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
@@ -1515,9 +1721,20 @@ class AIService:
             instructions=system_prompt,
             model=sdk_model,
             model_settings=(
-                ModelSettings(extra_body={"response_format": {"type": "json_object"}})
+                ModelSettings(
+                    extra_body=self._merge_extra_body(
+                        {
+                            "response_format": {"type": "json_object"},
+                            "max_completion_tokens": self.max_tokens,
+                        }
+                    )
+                )
                 if (ModelSettings and use_json_format)
-                else ModelSettings()
+                else ModelSettings(
+                    extra_body=self._merge_extra_body(
+                        {"max_completion_tokens": self.max_tokens}
+                    )
+                )
             ) if ModelSettings else None,
         )
 
@@ -1528,7 +1745,16 @@ class AIService:
             result = await Runner.run(agent, user_messages)
         elapsed_ms = int((time.monotonic() - t0) * 1000)
 
-        raw_content = result.final_output if isinstance(result.final_output, str) else ""
+        raw_response = result.raw_responses[-1] if result.raw_responses else result
+        raw_response_path = self._save_raw_response_object(
+            purpose="json_raw",
+            raw_response=raw_response,
+        )
+        raw_content = (
+            result.final_output
+            if isinstance(result.final_output, str)
+            else self._extract_text_from_raw_response(raw_response)
+        )
 
         prompt_tokens = completion_tokens = total_tokens = 0
         finish_reason = "stop"
@@ -1550,6 +1776,7 @@ class AIService:
 
         return {
             "raw_content": raw_content,
+            "raw_response_path": raw_response_path,
             "finish_reason": finish_reason,
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,

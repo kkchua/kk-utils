@@ -199,7 +199,7 @@ The `kk_utils.agents` module implements a **Master Agent orchestrator** with plu
 ```
 User message → MasterAgent.chat()
   ↓
-1. Load persona metadata from PostgreSQL personas (fallback: personas.yaml)
+1. Load persona metadata from PostgreSQL personas
 2. Select adapter by persona.adapter_type (e.g., "agent_me", "ai_assistant")
 3. Derive tool tags from the persona's assigned skills
 4. Load tools from AgentRegistry by derived skill_tags

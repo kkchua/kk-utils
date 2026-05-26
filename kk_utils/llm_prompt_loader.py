@@ -1,8 +1,7 @@
 """
 kk_utils.llm_prompt_loader
 
-Reusable loader for prompt text stored in PostgreSQL llm_prompts with
-optional repository fallback files.
+Reusable loader for prompt text stored in PostgreSQL llm_prompts.
 """
 from __future__ import annotations
 
@@ -73,28 +72,19 @@ def load_llm_prompt(
     fallback_text: str | None = None,
 ) -> str:
     """
-    Load prompt text in priority order:
-    1. PostgreSQL llm_prompts
-    2. repository fallback file
-    3. hardcoded fallback text
+    Load prompt text from PostgreSQL llm_prompts only.
     """
+    if fallback_path is not None or fallback_text is not None:
+        raise ValueError(
+            "Static prompt fallbacks have been removed; load_llm_prompt() "
+            "accepts DB-backed prompts only"
+        )
+
     prompt_text = _load_prompt_from_db(namespace, adapter, name, db_session=db_session)
     if prompt_text:
         logger.info("Loaded prompt %s/%s/%s from DB", namespace, adapter, name)
         return prompt_text
 
-    if fallback_path:
-        path = Path(fallback_path)
-        if path.exists():
-            prompt_text = path.read_text(encoding="utf-8").strip()
-            if prompt_text:
-                logger.info("Loaded prompt %s/%s/%s from file fallback: %s", namespace, adapter, name, path)
-                return prompt_text
-
-    if fallback_text and fallback_text.strip():
-        logger.info("Loaded prompt %s/%s/%s from hardcoded fallback", namespace, adapter, name)
-        return fallback_text.strip()
-
     raise FileNotFoundError(
-        f"Unable to load prompt {namespace}/{adapter}/{name} from DB, file fallback, or hardcoded fallback"
+        f"Unable to load enabled DB prompt {namespace}/{adapter}/{name}"
     )

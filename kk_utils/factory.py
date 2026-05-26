@@ -150,6 +150,8 @@ class AgentMeFactory:
         Convenience: resolve persona by name and return AgentConfig.
         """
         from kk_utils.persona_config import load_persona
+        if config_path is not None:
+            logger.warning("config_path is deprecated; persona loading is DB-backed")
         persona = load_persona(persona_name, config_path=config_path)
         if persona is None:
             raise ValueError(f"Persona '{persona_name}' not found")
@@ -472,12 +474,14 @@ class MasterAgentFactory:
         Args:
             persona_name: Persona key
             user_role: User role string
-            config_path: Path to a legacy persona config file
+            config_path: Deprecated compatibility parameter
         
         Returns:
             BaseAgent instance
         """
         from kk_utils.persona_config import load_persona
+        if config_path is not None:
+            logger.warning("config_path is deprecated; persona loading is DB-backed")
         
         persona = load_persona(persona_name, config_path=config_path)
         if persona is None:
