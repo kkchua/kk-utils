@@ -339,6 +339,32 @@ class AIService:
         if raw_response is None:
             return ""
 
+        def _pick_best_json_text(texts: List[str]) -> str:
+            candidates = [text.strip() for text in texts if isinstance(text, str) and text.strip()]
+            if not candidates:
+                return ""
+
+            json_candidates: List[str] = []
+            for text in candidates:
+                normalized = text
+                if normalized.startswith("```"):
+                    lines = normalized.splitlines()
+                    if lines:
+                        lines = lines[1:]
+                    if lines and lines[-1].strip().startswith("```"):
+                        lines = lines[:-1]
+                    normalized = "\n".join(lines).strip()
+                if normalized.startswith("{") or normalized.startswith("["):
+                    try:
+                        json.loads(normalized)
+                    except Exception:
+                        continue
+                    json_candidates.append(normalized)
+
+            if json_candidates:
+                return max(json_candidates, key=len)
+            return max(candidates, key=len)
+
         def _from_message(message: Any) -> str:
             if isinstance(message, str):
                 return message
@@ -373,6 +399,55 @@ class AIService:
             text = getattr(message, "text", None)
             return text if isinstance(text, str) else ""
 
+        def _collect_texts(value: Any) -> List[str]:
+            texts: List[str] = []
+            if value is None:
+                return texts
+            if isinstance(value, str):
+                return [value]
+            if isinstance(value, dict):
+                text = value.get("text")
+                if isinstance(text, str):
+                    texts.append(text)
+                content = value.get("content")
+                if isinstance(content, str):
+                    texts.append(content)
+                elif isinstance(content, list):
+                    for item in content:
+                        texts.extend(_collect_texts(item))
+                summary = value.get("summary")
+                if isinstance(summary, list):
+                    for item in summary:
+                        texts.extend(_collect_texts(item))
+                output = value.get("output")
+                if isinstance(output, list):
+                    for item in output:
+                        texts.extend(_collect_texts(item))
+                return texts
+            if isinstance(value, list):
+                for item in value:
+                    texts.extend(_collect_texts(item))
+                return texts
+
+            text = getattr(value, "text", None)
+            if isinstance(text, str):
+                texts.append(text)
+            content = getattr(value, "content", None)
+            if isinstance(content, str):
+                texts.append(content)
+            elif isinstance(content, list):
+                for item in content:
+                    texts.extend(_collect_texts(item))
+            summary = getattr(value, "summary", None)
+            if isinstance(summary, list):
+                for item in summary:
+                    texts.extend(_collect_texts(item))
+            output = getattr(value, "output", None)
+            if isinstance(output, list):
+                for item in output:
+                    texts.extend(_collect_texts(item))
+            return texts
+
         choices = getattr(raw_response, "choices", None)
         if choices:
             texts: List[str] = []
@@ -384,15 +459,53 @@ class AIService:
                 if text:
                     texts.append(text)
             if texts:
+                preferred = _pick_best_json_text(texts)
+                if preferred:
+                    return preferred
                 return "\n".join(texts)
 
         response_payload = self._to_jsonable(raw_response)
+
+        output_items = response_payload.get("output") if isinstance(response_payload, dict) else None
+        if isinstance(output_items, list):
+            message_texts: List[str] = []
+            reasoning_texts: List[str] = []
+            for item in output_items:
+                if not isinstance(item, dict):
+                    continue
+                item_type = item.get("type")
+                if item_type == "message":
+                    text = _from_message(item)
+                    if text:
+                        message_texts.append(text)
+                elif item_type == "reasoning":
+                    reasoning_texts.extend(_collect_texts(item))
+
+            preferred_message = _pick_best_json_text(message_texts)
+            if preferred_message:
+                return preferred_message
+
+            preferred_reasoning = _pick_best_json_text(reasoning_texts)
+            if preferred_reasoning:
+                return preferred_reasoning
+
+        collected = [text for text in _collect_texts(response_payload) if isinstance(text, str) and text.strip()]
+        if collected:
+            preferred = _pick_best_json_text(collected)
+            if preferred:
+                return preferred
+            return max(collected, key=len)
         if isinstance(response_payload, dict):
             for key in ("output_text", "text", "content"):
                 value = response_payload.get(key)
                 if isinstance(value, str):
                     return value
         return ""
+
+    def _resolve_raw_content(self, final_output: Any, raw_response: Any) -> str:
+        if isinstance(final_output, str) and final_output.strip():
+            return final_output
+        return self._extract_text_from_raw_response(raw_response)
 
     # -------------------------------------------------------------------------
     # Public API
@@ -1637,11 +1750,7 @@ class AIService:
             purpose="vision_raw",
             raw_response=raw_response,
         )
-        raw_content = (
-            result.final_output
-            if isinstance(result.final_output, str)
-            else self._extract_text_from_raw_response(raw_response)
-        )
+        raw_content = self._resolve_raw_content(result.final_output, raw_response)
 
         # Extract usage from last raw response
         prompt_tokens = completion_tokens = total_tokens = 0
@@ -1750,11 +1859,7 @@ class AIService:
             purpose="json_raw",
             raw_response=raw_response,
         )
-        raw_content = (
-            result.final_output
-            if isinstance(result.final_output, str)
-            else self._extract_text_from_raw_response(raw_response)
-        )
+        raw_content = self._resolve_raw_content(result.final_output, raw_response)
 
         prompt_tokens = completion_tokens = total_tokens = 0
         finish_reason = "stop"
