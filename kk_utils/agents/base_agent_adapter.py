@@ -105,6 +105,7 @@ class BaseAgentAdapter(ABC):
         tools: List[Dict[str, Any]],
         model: str,
         persona: Optional["PersonaConfig"] = None,
+        user_id: Optional[str] = None,
     ) -> AgentResponse:
         """
         Execute AI chat — centralized LLM call for all adapters.
@@ -130,6 +131,7 @@ class BaseAgentAdapter(ABC):
                 tools=tools,
                 model=model,
                 persona=persona,
+                user_id=user_id,
             )
             response_text = response_data.get("response", "")
             trace_events = response_data.get("trace_events", [])
@@ -251,6 +253,7 @@ class BaseAgentAdapter(ABC):
         tools: List[Dict[str, Any]],
         model: str,
         persona: Optional["PersonaConfig"] = None,
+        user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Execute chat using kk_utils.ai.AIService.
@@ -266,7 +269,7 @@ class BaseAgentAdapter(ABC):
         Returns:
             Raw response dict from AIService with trace_events in metadata
         """
-        from ..ai import AIService
+        from ..ai import AIService, CallContext
 
         ai_service = AIService(api_model=model)
 
@@ -321,6 +324,11 @@ class BaseAgentAdapter(ABC):
             agent_name=agent_name,
             trace_callback=trace_callback,
             persona_collection=persona.collection if persona else None,
+            context=CallContext(
+                agent_name=agent_name or getattr(self, "adapter_name", "agent"),
+                feature_name="chat_with_tools",
+                user_id=user_id,
+            ),
         )
 
         # Return response with trace_events in metadata

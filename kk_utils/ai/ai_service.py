@@ -757,6 +757,7 @@ class AIService:
         trace_callback=None,
         trace_prefix: str = "Agent:",
         persona_collection: Optional[str] = None,
+        context: Optional[CallContext] = None,
     ) -> List:
         """Convert AgentRegistry OpenAI-format dicts into SDK FunctionTool objects.
 
@@ -790,6 +791,7 @@ class AIService:
                 _prefix=trace_prefix,
                 _persona_collection=persona_collection,
                 _tool_def=tool_def,
+                _context=context,
             ):
                 try:
                     tool_args = _json.loads(args_json) if args_json else {}
@@ -800,14 +802,12 @@ class AIService:
                 _null_vals = {"null", "NULL", "None", "none"}
                 tool_args = {k: (None if isinstance(v, str) and v in _null_vals else v) for k, v in tool_args.items()}
                 tool_args = {k: v for k, v in tool_args.items() if v is not None}
-                if _persona_collection:
-                    function_ref = _tool_def.get("function_ref")
-                    tool_meta = getattr(function_ref, "__agent_tool__", {}) if function_ref else {}
-                    tool_tags = list(tool_meta.get("tags", []))
-                    tool_params = tool_meta.get("parameters", {}).get("properties", {}) if tool_meta else {}
-                    if "persona_collection" in tool_params or "digital_me" in tool_tags:
-                        # Persona collection is runtime-owned context, not LLM-owned input.
-                        tool_args["persona_collection"] = _persona_collection
+                tool_args = self._inject_runtime_tool_args(
+                    _tool_def,
+                    tool_args,
+                    context=_context,
+                    persona_collection=_persona_collection,
+                )
 
                 logger.debug(f"Tool call: {_name}({tool_args})")
                 result = registry.execute(_name, **tool_args)
@@ -832,6 +832,32 @@ class AIService:
                 on_invoke_tool=on_invoke,
             ))
         return sdk_tools
+
+    @staticmethod
+    def _inject_runtime_tool_args(
+        tool_def: Dict[str, Any],
+        tool_args: Dict[str, Any],
+        *,
+        context: Optional[CallContext],
+        persona_collection: Optional[str],
+    ) -> Dict[str, Any]:
+        """Overwrite runtime-owned tool arguments with trusted request context."""
+        function_ref = tool_def.get("function_ref")
+        tool_meta = getattr(function_ref, "__agent_tool__", {}) if function_ref else {}
+        runtime_parameters = set(tool_meta.get("runtime_parameters", []))
+        trusted_values = {
+            "user_id": context.user_id if context else None,
+            "persona_collection": persona_collection,
+        }
+
+        effective_args = dict(tool_args)
+        for name in runtime_parameters:
+            value = trusted_values.get(name)
+            if value is not None:
+                effective_args[name] = value
+            else:
+                effective_args.pop(name, None)
+        return effective_args
 
     def _build_progress_tool(self, progress_callback: Callable, max_plan_steps: int):
         """Create a FunctionTool for report_progress with progress_callback wired in."""
@@ -975,7 +1001,13 @@ class AIService:
             trace_callback=trace_callback,
             trace_prefix=trace_prefix,
             persona_collection=persona_collection,
+            context=context,
         )
+        tool_defs_by_name = {
+            tool_def.get("function", {}).get("name"): tool_def
+            for tool_def in tools or []
+            if tool_def.get("function", {}).get("name")
+        }
         if progress_callback is not None:
             sdk_tools.insert(0, self._build_progress_tool(progress_callback, max_plan_steps))
 
@@ -1039,6 +1071,12 @@ class AIService:
                             args_json = getattr(raw, "arguments", None) or "{}"
                             try:
                                 tool_args = json.loads(args_json)
+                                tool_args = self._inject_runtime_tool_args(
+                                    tool_defs_by_name.get(tool_name, {}),
+                                    tool_args,
+                                    context=context,
+                                    persona_collection=persona_collection,
+                                )
                                 dedup_key = f"{tool_name}:{json.dumps(tool_args, sort_keys=True)}"
                             except Exception:
                                 tool_args = {}
@@ -1382,6 +1420,11 @@ class AIService:
         messages.append({"role": "user", "content": self._anthropic_text_message(message)})
 
         anthropic_tools = self._anthropic_tools_from_openai(tools or [])
+        tool_defs_by_name = {
+            tool_def.get("function", {}).get("name"): tool_def
+            for tool_def in tools or []
+            if tool_def.get("function", {}).get("name")
+        }
         if progress_callback is not None:
             anthropic_tools.insert(
                 0,
@@ -1488,6 +1531,12 @@ class AIService:
                             progress_callback(steps)
                             tool_result = {"acknowledged": True, "steps_recorded": len(steps)}
                     else:
+                        tool_input = self._inject_runtime_tool_args(
+                            tool_defs_by_name.get(tool_name, {}),
+                            tool_input,
+                            context=context,
+                            persona_collection=persona_collection,
+                        )
                         if trace_callback:
                             args_str = ", ".join(
                                 f"{k}={v!r}" for k, v in tool_input.items() if v not in (None, "", [])

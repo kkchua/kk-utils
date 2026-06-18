@@ -490,6 +490,7 @@ class MasterAgent:
             tools=tools,
             model=model,
             persona=persona,
+            user_id=user_id,
         )
         
         # 9. Post-process (adapter-specific)
