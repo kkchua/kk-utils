@@ -1625,10 +1625,11 @@ class AIService:
 
             use_schema = self._get_output_schema_enabled(context)
             # The OpenAI Agents SDK sends response_format json_schema whenever
-            # output_type is set on SDKAgent. DeepSeek only supports json_object
-            # (not json_schema), and Anthropic also rejects json_schema.
-            # For these providers, disable output_type and parse raw text ourselves.
-            skip_json_schema = self.provider in ("deepseek", "qwen_token", "anthropic")
+            # output_type is set on SDKAgent. Several OpenAI-compatible providers
+            # (DeepSeek, Qwen/DashScope) do not handle that path reliably, and
+            # Anthropic also rejects json_schema. For these providers, disable
+            # output_type and parse raw text ourselves.
+            skip_json_schema = self._should_skip_json_schema()
             wrapped_output = None
             if skip_json_schema:
                 logger.debug(
@@ -1958,6 +1959,23 @@ class AIService:
         Default: returns self.enable_output_schema (set at construction time).
         """
         return self.enable_output_schema
+
+    def _should_skip_json_schema(self) -> bool:
+        """
+        Return True when the provider should avoid Agents SDK json_schema output.
+
+        Some OpenAI-compatible providers (notably Qwen/DashScope) do not handle
+        the schema-wrapped structured output path reliably, even though they can
+        still answer the same question via plain chat completion flow.
+        """
+        return self.provider in (
+            "deepseek",
+            "qwen",
+            "dashscope",
+            "qwen_token",
+            "qwen_token_chat",
+            "anthropic",
+        )
 
     def _mock_response(self, output_type: type[BaseModel]) -> BaseModel:
         """Generate a mock response for testing / no-API-key mode."""
