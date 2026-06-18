@@ -339,6 +339,32 @@ class AIService:
         if raw_response is None:
             return ""
 
+        def _pick_best_json_text(texts: List[str]) -> str:
+            candidates = [text.strip() for text in texts if isinstance(text, str) and text.strip()]
+            if not candidates:
+                return ""
+
+            json_candidates: List[str] = []
+            for text in candidates:
+                normalized = text
+                if normalized.startswith("```"):
+                    lines = normalized.splitlines()
+                    if lines:
+                        lines = lines[1:]
+                    if lines and lines[-1].strip().startswith("```"):
+                        lines = lines[:-1]
+                    normalized = "\n".join(lines).strip()
+                if normalized.startswith("{") or normalized.startswith("["):
+                    try:
+                        json.loads(normalized)
+                    except Exception:
+                        continue
+                    json_candidates.append(normalized)
+
+            if json_candidates:
+                return max(json_candidates, key=len)
+            return max(candidates, key=len)
+
         def _from_message(message: Any) -> str:
             if isinstance(message, str):
                 return message
@@ -373,6 +399,55 @@ class AIService:
             text = getattr(message, "text", None)
             return text if isinstance(text, str) else ""
 
+        def _collect_texts(value: Any) -> List[str]:
+            texts: List[str] = []
+            if value is None:
+                return texts
+            if isinstance(value, str):
+                return [value]
+            if isinstance(value, dict):
+                text = value.get("text")
+                if isinstance(text, str):
+                    texts.append(text)
+                content = value.get("content")
+                if isinstance(content, str):
+                    texts.append(content)
+                elif isinstance(content, list):
+                    for item in content:
+                        texts.extend(_collect_texts(item))
+                summary = value.get("summary")
+                if isinstance(summary, list):
+                    for item in summary:
+                        texts.extend(_collect_texts(item))
+                output = value.get("output")
+                if isinstance(output, list):
+                    for item in output:
+                        texts.extend(_collect_texts(item))
+                return texts
+            if isinstance(value, list):
+                for item in value:
+                    texts.extend(_collect_texts(item))
+                return texts
+
+            text = getattr(value, "text", None)
+            if isinstance(text, str):
+                texts.append(text)
+            content = getattr(value, "content", None)
+            if isinstance(content, str):
+                texts.append(content)
+            elif isinstance(content, list):
+                for item in content:
+                    texts.extend(_collect_texts(item))
+            summary = getattr(value, "summary", None)
+            if isinstance(summary, list):
+                for item in summary:
+                    texts.extend(_collect_texts(item))
+            output = getattr(value, "output", None)
+            if isinstance(output, list):
+                for item in output:
+                    texts.extend(_collect_texts(item))
+            return texts
+
         choices = getattr(raw_response, "choices", None)
         if choices:
             texts: List[str] = []
@@ -384,15 +459,53 @@ class AIService:
                 if text:
                     texts.append(text)
             if texts:
+                preferred = _pick_best_json_text(texts)
+                if preferred:
+                    return preferred
                 return "\n".join(texts)
 
         response_payload = self._to_jsonable(raw_response)
+
+        output_items = response_payload.get("output") if isinstance(response_payload, dict) else None
+        if isinstance(output_items, list):
+            message_texts: List[str] = []
+            reasoning_texts: List[str] = []
+            for item in output_items:
+                if not isinstance(item, dict):
+                    continue
+                item_type = item.get("type")
+                if item_type == "message":
+                    text = _from_message(item)
+                    if text:
+                        message_texts.append(text)
+                elif item_type == "reasoning":
+                    reasoning_texts.extend(_collect_texts(item))
+
+            preferred_message = _pick_best_json_text(message_texts)
+            if preferred_message:
+                return preferred_message
+
+            preferred_reasoning = _pick_best_json_text(reasoning_texts)
+            if preferred_reasoning:
+                return preferred_reasoning
+
+        collected = [text for text in _collect_texts(response_payload) if isinstance(text, str) and text.strip()]
+        if collected:
+            preferred = _pick_best_json_text(collected)
+            if preferred:
+                return preferred
+            return max(collected, key=len)
         if isinstance(response_payload, dict):
             for key in ("output_text", "text", "content"):
                 value = response_payload.get(key)
                 if isinstance(value, str):
                     return value
         return ""
+
+    def _resolve_raw_content(self, final_output: Any, raw_response: Any) -> str:
+        if isinstance(final_output, str) and final_output.strip():
+            return final_output
+        return self._extract_text_from_raw_response(raw_response)
 
     # -------------------------------------------------------------------------
     # Public API
@@ -644,6 +757,7 @@ class AIService:
         trace_callback=None,
         trace_prefix: str = "Agent:",
         persona_collection: Optional[str] = None,
+        context: Optional[CallContext] = None,
     ) -> List:
         """Convert AgentRegistry OpenAI-format dicts into SDK FunctionTool objects.
 
@@ -677,6 +791,7 @@ class AIService:
                 _prefix=trace_prefix,
                 _persona_collection=persona_collection,
                 _tool_def=tool_def,
+                _context=context,
             ):
                 try:
                     tool_args = _json.loads(args_json) if args_json else {}
@@ -687,14 +802,12 @@ class AIService:
                 _null_vals = {"null", "NULL", "None", "none"}
                 tool_args = {k: (None if isinstance(v, str) and v in _null_vals else v) for k, v in tool_args.items()}
                 tool_args = {k: v for k, v in tool_args.items() if v is not None}
-                if _persona_collection:
-                    function_ref = _tool_def.get("function_ref")
-                    tool_meta = getattr(function_ref, "__agent_tool__", {}) if function_ref else {}
-                    tool_tags = list(tool_meta.get("tags", []))
-                    tool_params = tool_meta.get("parameters", {}).get("properties", {}) if tool_meta else {}
-                    if "persona_collection" in tool_params or "digital_me" in tool_tags:
-                        # Persona collection is runtime-owned context, not LLM-owned input.
-                        tool_args["persona_collection"] = _persona_collection
+                tool_args = self._inject_runtime_tool_args(
+                    _tool_def,
+                    tool_args,
+                    context=_context,
+                    persona_collection=_persona_collection,
+                )
 
                 logger.debug(f"Tool call: {_name}({tool_args})")
                 result = registry.execute(_name, **tool_args)
@@ -719,6 +832,32 @@ class AIService:
                 on_invoke_tool=on_invoke,
             ))
         return sdk_tools
+
+    @staticmethod
+    def _inject_runtime_tool_args(
+        tool_def: Dict[str, Any],
+        tool_args: Dict[str, Any],
+        *,
+        context: Optional[CallContext],
+        persona_collection: Optional[str],
+    ) -> Dict[str, Any]:
+        """Overwrite runtime-owned tool arguments with trusted request context."""
+        function_ref = tool_def.get("function_ref")
+        tool_meta = getattr(function_ref, "__agent_tool__", {}) if function_ref else {}
+        runtime_parameters = set(tool_meta.get("runtime_parameters", []))
+        trusted_values = {
+            "user_id": context.user_id if context else None,
+            "persona_collection": persona_collection,
+        }
+
+        effective_args = dict(tool_args)
+        for name in runtime_parameters:
+            value = trusted_values.get(name)
+            if value is not None:
+                effective_args[name] = value
+            else:
+                effective_args.pop(name, None)
+        return effective_args
 
     def _build_progress_tool(self, progress_callback: Callable, max_plan_steps: int):
         """Create a FunctionTool for report_progress with progress_callback wired in."""
@@ -862,7 +1001,13 @@ class AIService:
             trace_callback=trace_callback,
             trace_prefix=trace_prefix,
             persona_collection=persona_collection,
+            context=context,
         )
+        tool_defs_by_name = {
+            tool_def.get("function", {}).get("name"): tool_def
+            for tool_def in tools or []
+            if tool_def.get("function", {}).get("name")
+        }
         if progress_callback is not None:
             sdk_tools.insert(0, self._build_progress_tool(progress_callback, max_plan_steps))
 
@@ -926,6 +1071,12 @@ class AIService:
                             args_json = getattr(raw, "arguments", None) or "{}"
                             try:
                                 tool_args = json.loads(args_json)
+                                tool_args = self._inject_runtime_tool_args(
+                                    tool_defs_by_name.get(tool_name, {}),
+                                    tool_args,
+                                    context=context,
+                                    persona_collection=persona_collection,
+                                )
                                 dedup_key = f"{tool_name}:{json.dumps(tool_args, sort_keys=True)}"
                             except Exception:
                                 tool_args = {}
@@ -1269,6 +1420,11 @@ class AIService:
         messages.append({"role": "user", "content": self._anthropic_text_message(message)})
 
         anthropic_tools = self._anthropic_tools_from_openai(tools or [])
+        tool_defs_by_name = {
+            tool_def.get("function", {}).get("name"): tool_def
+            for tool_def in tools or []
+            if tool_def.get("function", {}).get("name")
+        }
         if progress_callback is not None:
             anthropic_tools.insert(
                 0,
@@ -1375,6 +1531,12 @@ class AIService:
                             progress_callback(steps)
                             tool_result = {"acknowledged": True, "steps_recorded": len(steps)}
                     else:
+                        tool_input = self._inject_runtime_tool_args(
+                            tool_defs_by_name.get(tool_name, {}),
+                            tool_input,
+                            context=context,
+                            persona_collection=persona_collection,
+                        )
                         if trace_callback:
                             args_str = ", ".join(
                                 f"{k}={v!r}" for k, v in tool_input.items() if v not in (None, "", [])
@@ -1637,11 +1799,7 @@ class AIService:
             purpose="vision_raw",
             raw_response=raw_response,
         )
-        raw_content = (
-            result.final_output
-            if isinstance(result.final_output, str)
-            else self._extract_text_from_raw_response(raw_response)
-        )
+        raw_content = self._resolve_raw_content(result.final_output, raw_response)
 
         # Extract usage from last raw response
         prompt_tokens = completion_tokens = total_tokens = 0
@@ -1750,11 +1908,7 @@ class AIService:
             purpose="json_raw",
             raw_response=raw_response,
         )
-        raw_content = (
-            result.final_output
-            if isinstance(result.final_output, str)
-            else self._extract_text_from_raw_response(raw_response)
-        )
+        raw_content = self._resolve_raw_content(result.final_output, raw_response)
 
         prompt_tokens = completion_tokens = total_tokens = 0
         finish_reason = "stop"

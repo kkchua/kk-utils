@@ -20,10 +20,25 @@ from kk_utils.agent_tools import agent_tool
 from kk_utils.execution_trace import emit_trace
 
 logger = logging.getLogger(__name__)
+_RUNTIME_PARAMETERS = ["user_id", "persona_collection"]
 
 
 def _trace(message: str) -> None:
     emit_trace(f"agent_me.{message}")
+
+
+def _rag_tool_result(rag_result: dict) -> dict:
+    """Return a consistent RAG payload for all Digital Me profile tools."""
+    return {
+        "source": "rag",
+        "confidence": rag_result["confidence"],
+        "chunks": rag_result["chunks"],
+        "sources": rag_result.get("sources", []),
+        "retrieval_time_ms": rag_result.get("retrieval_time_ms", 0.0),
+        "chunks_searched": rag_result.get("chunks_searched", 0),
+        "avg_distance": rag_result.get("avg_distance", 0.0),
+        "collection_name": rag_result.get("collection_name"),
+    }
 
 
 @agent_tool(
@@ -32,6 +47,7 @@ def _trace(message: str) -> None:
     tags=["digital_me", "rag", "search"],
     access_level="user",
     sensitivity="medium",
+    runtime_parameters=_RUNTIME_PARAMETERS,
     input_schema={
         "type": "object",
         "properties": {
@@ -75,7 +91,8 @@ def search_digital_me(
         dict with chunks, confidence, sources
     """
     _trace(
-        f"search_digital_me start query={query!r} top_k={top_k} source_type={source_type!r} persona_collection={persona_collection!r}"
+        f"search_digital_me start query={query!r} top_k={top_k} source_type={source_type!r} "
+        f"user_id={user_id!r} persona_collection={persona_collection!r}"
     )
     from kk_utils.rag.rag_engine import RAGEngine
 
@@ -93,10 +110,18 @@ def search_digital_me(
         )
 
         sanitized_chunks = []
+        seen_content = set()
         for chunk in result.chunks if result.has_results else []:
+            content = chunk.get("text", chunk.get("content", ""))
+            content_key = " ".join(content.split())
+            if not content_key or content_key in seen_content:
+                continue
+            seen_content.add(content_key)
             sanitized_chunk = {
                 # RAGEngine.query() returns chunk text under "text".
-                "content": chunk.get("text", chunk.get("content", "")),
+                "content": content,
+                "relevance_score": chunk.get("relevance_score", 0.0),
+                "distance": chunk.get("distance", 0.0),
                 "metadata": {
                     k: v for k, v in chunk.get("metadata", {}).items()
                     if k not in ["user_id", "access_level"]
@@ -104,12 +129,24 @@ def search_digital_me(
             }
             sanitized_chunks.append(sanitized_chunk)
 
+        selected_chunks = sanitized_chunks[:top_k]
+        selected_scores = [
+            chunk["relevance_score"]
+            for chunk in selected_chunks
+            if isinstance(chunk.get("relevance_score"), (int, float))
+        ]
+        selected_confidence = (
+            sum(selected_scores) / len(selected_scores)
+            if selected_scores else 0.0
+        )
+
         return {
             "query": query,
-            "chunks": sanitized_chunks[:top_k],
-            "confidence": result.confidence if result.has_results else 0.0,
+            "chunks": selected_chunks,
+            "confidence": round(selected_confidence, 6),
             "sources": result.sources if result.has_results else [],
-            "security_filter_applied": True,
+            "security_filter_applied": False,
+            "search_scope": "collection",
             "filtered_count": len(result.chunks if result.has_results else []) - len(sanitized_chunks),
             "message": result.message,
             "retrieval_time_ms": result.retrieval_time_ms,
@@ -148,6 +185,7 @@ def search_digital_me(
     tags=["digital_me", "experience", "resume"],
     access_level="demo",
     sensitivity="low",
+    runtime_parameters=_RUNTIME_PARAMETERS,
 )
 def get_work_experience(
     company: Optional[str] = None,
@@ -179,12 +217,7 @@ def get_work_experience(
 
     if rag_result.get("confidence", 0.0) > 0.1:
         _trace("get_work_experience using RAG")
-        return {
-            "source": "rag",
-            "confidence": rag_result["confidence"],
-            "chunks": rag_result["chunks"],
-            "sources": rag_result["sources"],
-        }
+        return _rag_tool_result(rag_result)
 
     # Fallback to structured data
     from kk_utils.digital_me.service import get_work_experience as get_work_exp_svc
@@ -202,6 +235,7 @@ def get_work_experience(
     tags=["digital_me", "skills"],
     access_level="demo",
     sensitivity="low",
+    runtime_parameters=_RUNTIME_PARAMETERS,
 )
 def get_skills(
     category: Optional[str] = None,
@@ -235,7 +269,7 @@ def get_skills(
 
     if rag_result.get("confidence", 0.0) > 0.1:
         _trace("get_skills using RAG")
-        return {"source": "rag", "confidence": rag_result["confidence"], "chunks": rag_result["chunks"]}
+        return _rag_tool_result(rag_result)
 
     # Fallback to structured data
     from kk_utils.digital_me.service import get_skills as get_skills_svc
@@ -253,6 +287,7 @@ def get_skills(
     tags=["digital_me", "education", "resume"],
     access_level="demo",
     sensitivity="low",
+    runtime_parameters=_RUNTIME_PARAMETERS,
 )
 def get_education(
     degree_level: Optional[str] = None,
@@ -284,7 +319,7 @@ def get_education(
 
     if rag_result.get("confidence", 0.0) > 0.1:
         _trace("get_education using RAG")
-        return {"source": "rag", "confidence": rag_result["confidence"], "chunks": rag_result["chunks"]}
+        return _rag_tool_result(rag_result)
 
     # Fallback to structured data
     from kk_utils.digital_me.service import get_education as get_edu_svc
@@ -302,6 +337,7 @@ def get_education(
     tags=["digital_me", "projects"],
     access_level="demo",
     sensitivity="low",
+    runtime_parameters=_RUNTIME_PARAMETERS,
 )
 def get_projects(
     technology: Optional[str] = None,
@@ -339,7 +375,7 @@ def get_projects(
 
     if rag_result.get("confidence", 0.0) > 0.1:
         _trace("get_projects using RAG")
-        return {"source": "rag", "confidence": rag_result["confidence"], "chunks": rag_result["chunks"]}
+        return _rag_tool_result(rag_result)
 
     # Fallback to structured data
     from kk_utils.digital_me.service import get_projects as get_proj_svc
@@ -357,6 +393,7 @@ def get_projects(
     tags=["digital_me", "certifications", "resume"],
     access_level="demo",
     sensitivity="low",
+    runtime_parameters=_RUNTIME_PARAMETERS,
 )
 def get_certifications(
     issuer: Optional[str] = None,
@@ -388,7 +425,7 @@ def get_certifications(
 
     if rag_result.get("confidence", 0.0) > 0.1:
         _trace("get_certifications using RAG")
-        return {"source": "rag", "confidence": rag_result["confidence"], "chunks": rag_result["chunks"]}
+        return _rag_tool_result(rag_result)
 
     # Fallback to structured data
     from kk_utils.digital_me.service import get_certifications as get_cert_svc
@@ -406,6 +443,7 @@ def get_certifications(
     tags=["digital_me", "summary"],
     access_level="anonymous",
     sensitivity="low",
+    runtime_parameters=_RUNTIME_PARAMETERS,
 )
 def get_digital_me_summary(
     user_id: Optional[str] = None,

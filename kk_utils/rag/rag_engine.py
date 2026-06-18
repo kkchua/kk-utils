@@ -240,14 +240,51 @@ class RAGEngine:
         """
         if not self.collection:
             return {"error": "RAG not initialized", "chunks": 0}
-        
-        # Chunk the document
+
+        content_hash = self.compute_content_hash(text)
         chunks = self.chunker.chunk(text)
+        chunk_fingerprint = self.compute_chunk_fingerprint(chunks)
+        existing = None
+        for metadata_key, fingerprint in (
+            ("content_hash", content_hash),
+            ("chunk_fingerprint", chunk_fingerprint),
+        ):
+            try:
+                candidate = self.collection.get(
+                    where={metadata_key: {"$eq": fingerprint}},
+                    include=["metadatas"],
+                    limit=1,
+                )
+            except Exception:
+                candidate = None
+            if candidate and candidate.get("ids"):
+                existing = candidate
+                break
+
+        if existing and existing.get("ids"):
+            existing_metadata = (existing.get("metadatas") or [{}])[0] or {}
+            existing_doc_id = existing_metadata.get("doc_id")
+            logger.info(
+                "Skipped duplicate document %s; identical content already exists as %s",
+                doc_id,
+                existing_doc_id,
+            )
+            return {
+                "doc_id": existing_doc_id,
+                "existing_doc_id": existing_doc_id,
+                "duplicate": True,
+                "chunks_added": 0,
+                "total_chunks": self.collection.count(),
+                "content_hash": content_hash,
+                "chunk_fingerprint": chunk_fingerprint,
+            }
         
         # Add metadata to each chunk
         base_metadata = metadata or {}
         base_metadata["doc_id"] = doc_id
         base_metadata["added_at"] = datetime.now().isoformat()
+        base_metadata["content_hash"] = content_hash
+        base_metadata["chunk_fingerprint"] = chunk_fingerprint
         
         # Create IDs and metadata for all chunks
         ids = []
@@ -277,7 +314,21 @@ class RAGEngine:
             "doc_id": doc_id,
             "chunks_added": len(chunks),
             "total_chunks": self.collection.count(),
+            "duplicate": False,
+            "content_hash": content_hash,
+            "chunk_fingerprint": chunk_fingerprint,
         }
+
+    @staticmethod
+    def compute_content_hash(text: str) -> str:
+        """Return a stable SHA-256 fingerprint for exact extracted document text."""
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def compute_chunk_fingerprint(chunks: List[str]) -> str:
+        """Return a stable fingerprint for an ordered set of document chunks."""
+        payload = json.dumps(chunks, ensure_ascii=False, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     async def ingest_file(
         self,

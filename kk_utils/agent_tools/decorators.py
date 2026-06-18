@@ -13,6 +13,7 @@ Usage:
 """
 from functools import wraps
 from typing import Callable, List, Optional, Dict, Any
+import copy
 import logging
 import inspect
 
@@ -28,6 +29,7 @@ def agent_tool(
     access_level: str = "user",        # anonymous | user | owner | admin
     sensitivity: str = "low",          # low | medium | high | critical
     input_schema: Optional[Dict[str, Any]] = None,
+    runtime_parameters: Optional[List[str]] = None,
     requires_confirmation: bool = False,
     is_destructive: bool = False,
 ):
@@ -43,6 +45,8 @@ def agent_tool(
         access_level: Required access level (anonymous, user, owner, admin)
         sensitivity: Data sensitivity (low, medium, high, critical)
         input_schema: JSON schema for input validation (auto-built if None)
+        runtime_parameters: Function parameters supplied by trusted runtime context,
+            never exposed to or accepted from the LLM
         requires_confirmation: Whether tool requires user confirmation
         is_destructive: Whether tool performs a destructive action
 
@@ -67,7 +71,16 @@ def agent_tool(
         def wrapper(*args, **kwargs):
             return fn(*args, **kwargs)
 
-        schema = input_schema or _build_schema_from_hints(fn)
+        schema = copy.deepcopy(input_schema or _build_schema_from_hints(fn))
+        runtime_params = list(runtime_parameters or [])
+        if runtime_params:
+            properties = schema.setdefault("properties", {})
+            for param_name in runtime_params:
+                properties.pop(param_name, None)
+            schema["required"] = [
+                name for name in schema.get("required", [])
+                if name not in runtime_params
+            ]
 
         tool_id = fn.__name__
         tool_name = name or fn.__name__.replace("_", " ").title()
@@ -83,6 +96,7 @@ def agent_tool(
             "access_level": access_level,
             "sensitivity": sensitivity,
             "parameters": schema,
+            "runtime_parameters": runtime_params,
             "requires_confirmation": requires_confirmation,
             "is_destructive": is_destructive,
             "function": fn,

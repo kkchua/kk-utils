@@ -175,3 +175,87 @@ async def test_anthropic_chat_with_tools_executes_tool_calls(anthropic_service, 
     assert text == "done"
     assert fake_registry.calls == [("lookup", {"query": "abc"})]
     assert len(service.anthropic_client.messages.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_anthropic_tool_calls_use_trusted_runtime_context(anthropic_service, monkeypatch):
+    ai_service, created_clients = anthropic_service
+    created_clients.clear()
+
+    first_response = _make_response(
+        [
+            SimpleNamespace(
+                type="tool_use",
+                id="tooluse-1",
+                name="lookup",
+                input={
+                    "query": "abc",
+                    "user_id": "attacker",
+                    "persona_collection": "other",
+                },
+            )
+        ]
+    )
+    second_response = _make_response([SimpleNamespace(type="text", text="done")])
+
+    def fake_client_factory(*args, **kwargs):
+        client = _FakeAnthropicClient([first_response, second_response])
+        created_clients.append(client)
+        return client
+
+    ai_service.AsyncAnthropic = fake_client_factory
+
+    class FakeRegistry:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, name, **kwargs):
+            self.calls.append((name, kwargs))
+            return {"result": "ok"}
+
+    def lookup(query, user_id=None, persona_collection=None):
+        return {}
+
+    lookup.__agent_tool__ = {
+        "runtime_parameters": ["user_id", "persona_collection"],
+    }
+    fake_registry = FakeRegistry()
+    monkeypatch.setattr("kk_utils.agent_tools.get_registry", lambda: fake_registry)
+
+    service = ai_service.AIService(api_model="anthropic/claude-sonnet-4-20250514", api_key="test-key")
+    text = await service.chat_with_tools(
+        message="look up abc",
+        tools=[
+            {
+                "function": {
+                    "name": "lookup",
+                    "description": "Look something up",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                        "required": ["query"],
+                    },
+                },
+                "function_ref": lookup,
+            }
+        ],
+        system_prompt="You are a tool-using assistant.",
+        context=ai_service.CallContext(
+            agent_name="agent_me",
+            feature_name="chat_with_tools",
+            user_id="demo_user",
+        ),
+        persona_collection="persona_kengkoon",
+    )
+
+    assert text == "done"
+    assert fake_registry.calls == [
+        (
+            "lookup",
+            {
+                "query": "abc",
+                "user_id": "demo_user",
+                "persona_collection": "persona_kengkoon",
+            },
+        )
+    ]
