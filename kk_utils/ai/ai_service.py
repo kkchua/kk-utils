@@ -157,6 +157,7 @@ class AIService:
         qwen/qwen-turbo
         ollama/llama3
         anthropic/claude-3-haiku-20240307
+        agnes-coder/agnes-2.0-flash
         mock/test
     """
 
@@ -198,7 +199,8 @@ class AIService:
             "qwen_token_chat": "DASHSCOPE_TOKEN_API_KEY",
             "ollama": "OLLAMA_API_KEY",
             "anthropic": "ANTHROPIC_API_KEY",
-            "deepseek": "DEEPSEEK_API_KEY"
+            "deepseek": "DEEPSEEK_API_KEY",
+            "agnes-coder": "AGNES_API_KEY"
         }
 
         api_key_env = api_key_env_map.get(self.provider)
@@ -235,7 +237,9 @@ class AIService:
                 self.base_url = os.environ.get("DEEPSEEK_API_URL", "https://api.deepseek.com")
             elif self.provider == "ollama":
                 self.base_url = os.environ.get("OLLAMA_API_URL", "http://localhost:11434/v1")
-
+            elif self.provider == "agnes-coder":
+                self.base_url = os.environ.get("AGNES_API_URL", "https://api.agnes-coder.com/v1")
+                
         if self.provider == "anthropic" and self.base_url:
             normalized_base_url = self.base_url.rstrip("/")
             if normalized_base_url.endswith("/v1"):
