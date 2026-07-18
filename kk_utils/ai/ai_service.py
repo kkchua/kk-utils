@@ -238,8 +238,8 @@ class AIService:
             elif self.provider == "ollama":
                 self.base_url = os.environ.get("OLLAMA_API_URL", "http://localhost:11434/v1")
             elif self.provider == "agnes-coder":
-                self.base_url = os.environ.get("AGNES_API_URL", "https://api.agnes-coder.com/v1")
-                
+                self.base_url = os.environ.get("AGNES_API_URL", "https://apihub.agnes-ai.com/v1")
+
         if self.provider == "anthropic" and self.base_url:
             normalized_base_url = self.base_url.rstrip("/")
             if normalized_base_url.endswith("/v1"):
