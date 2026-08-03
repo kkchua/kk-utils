@@ -200,7 +200,8 @@ class AIService:
             "ollama": "OLLAMA_API_KEY",
             "anthropic": "ANTHROPIC_API_KEY",
             "deepseek": "DEEPSEEK_API_KEY",
-            "agnes-coder": "AGNES_API_KEY"
+            "agnes-coder": "AGNES_API_KEY",
+            "opencode-go": "OPENCODE_GO_API_KEY"
         }
 
         api_key_env = api_key_env_map.get(self.provider)
@@ -239,6 +240,8 @@ class AIService:
                 self.base_url = os.environ.get("OLLAMA_API_URL", "http://localhost:11434/v1")
             elif self.provider == "agnes-coder":
                 self.base_url = os.environ.get("AGNES_API_URL", "https://apihub.agnes-ai.com/v1")
+            elif self.provider == "opencode-go":
+                self.base_url = os.environ.get("OPENCODE_GO_API_URL", "https://opencode.ai/zen/go/v1")
 
         if self.provider == "anthropic" and self.base_url:
             normalized_base_url = self.base_url.rstrip("/")
