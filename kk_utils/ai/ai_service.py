@@ -24,6 +24,7 @@ import json
 import logging
 from multiprocessing import context
 import os
+import uuid
 from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
@@ -271,6 +272,12 @@ class AIService:
             }
             if self.base_url:
                 client_kwargs["base_url"] = self.base_url
+            if self.provider == "opencode-go":
+                self._opencode_session_id = str(uuid.uuid4())
+                client_kwargs["default_headers"] = {
+                    "x-opencode-session": self._opencode_session_id,
+                }
+                logger.info("OpenCode Go session ID: %s", self._opencode_session_id)
 
             self.client = AsyncOpenAI(**client_kwargs)
 
